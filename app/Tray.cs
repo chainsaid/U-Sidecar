@@ -41,6 +41,12 @@ namespace ParsecDisplay
         // had no physical display. -1 = not active. Reset on suspend.
         int FallbackDriverIndex = -1;
 
+        // D92 panel streaming (see D92/StreamWorker.cs). Not localized (t_*)
+        // yet — Text is set directly in code, see UpdateD92MenuText.
+        D92.StreamWorker D92Worker;
+        ToolStripMenuItem MI_D92;
+        int InD92Toggle;
+
         // 1-second debounce — Windows fires multiple DisplaySettingsChanged
         // events in a storm during display changes; we only act on the trailing
         // edge so we don't flap displays during transitions.
@@ -70,6 +76,9 @@ namespace ParsecDisplay
             Instance = this;
             Vdd.Controller.Start();
 
+            D92Worker = new D92.StreamWorker();
+            D92Worker.StatusChanged += OnD92StatusChanged;
+
             GuiThread = new Thread(App.Main);
             GuiThread.IsBackground = true;
             GuiThread.SetApartmentState(ApartmentState.STA);
@@ -92,6 +101,8 @@ namespace ParsecDisplay
                         new ToolStripSeparator(),
                         new ToolStripMenuItem("t_add_display", null, AddDisplay),
                         new ToolStripMenuItem("t_remove_last_display", null, RemoveLastDisplay),
+                        new ToolStripSeparator(),
+                        (MI_D92 = new ToolStripMenuItem("D92 Streaming", null, ToggleD92Streaming)),
                         new ToolStripSeparator(),
                         new ToolStripMenuItem("t_options")
                         {
@@ -126,6 +137,7 @@ namespace ParsecDisplay
             }
 
             UpdateContent();
+            UpdateD92MenuText();
 
             TrayIcon.DoubleClick += delegate { ShowApp(); };
             TrayIcon.Visible = true;
@@ -475,6 +487,137 @@ namespace ParsecDisplay
             }
         }
 
+        /// <summary>
+        /// Start/stop D92 panel streaming. On start: ensure a Parsec virtual
+        /// display exists (reusing one if already active, otherwise creating
+        /// one and polling briefly for Windows to enumerate it), give it a
+        /// normal desktop-usable mode, then hand its GDI device name to
+        /// StreamWorker. See D92/StreamWorker.cs for the capture/encode/push
+        /// pipeline and D92/D92Device.cs for the wire protocol.
+        /// </summary>
+        void ToggleD92Streaming(object sender, EventArgs e)
+        {
+            if (Interlocked.Exchange(ref InD92Toggle, 1) != 0)
+                return;
+
+            try
+            {
+                if (D92Worker.CurrentStatus == D92.StreamWorker.Status.Streaming)
+                {
+                    D92Worker.Stop();
+                    return;
+                }
+
+                if (!TryEnsureVirtualDisplay(out var display, out var error))
+                {
+                    MessageBox.Show(Owner, error, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                if (!D92Worker.Start(display.DeviceName))
+                {
+                    MessageBox.Show(Owner,
+                        "D92 not found. Make sure it's plugged in and the official MiraBox software isn't holding it open.",
+                        Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error("ToggleD92Streaming threw: {0}", ex);
+                if (ex is Vdd.ErrorDriverStatus || ex is Vdd.ErrorDeviceHandle
+                    || ex is Vdd.ErrorExceededLimit || ex is Vdd.ErrorOperationFailed)
+                {
+                    HandleVddError(ex);
+                }
+                else
+                {
+                    MessageBox.Show(Owner, ex.Message, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+            finally
+            {
+                Interlocked.Exchange(ref InD92Toggle, 0);
+            }
+        }
+
+        /// <summary>Finds an already-active Parsec ("PSCCDD0") display, or adds one
+        /// and polls (up to ~3s) for Windows to finish enumerating it, then sets
+        /// it to a normal desktop mode. Displays are identified the same way
+        /// Display.GetAllDisplays already does for its [offline] phantom entries.</summary>
+        bool TryEnsureVirtualDisplay(out Display display, out string error)
+        {
+            display = null;
+            error = null;
+
+            Display FindActiveParsecDisplay()
+            {
+                foreach (var d in Display.GetAllDisplays())
+                    if (d.Active && !string.IsNullOrEmpty(d.DeviceName)
+                        && d.DisplayName.IndexOf("PSCCDD0", StringComparison.OrdinalIgnoreCase) >= 0)
+                        return d;
+                return null;
+            }
+
+            display = FindActiveParsecDisplay();
+
+            if (display == null)
+            {
+                Vdd.Controller.AddDisplay(); // throws Vdd.Error* on failure — let the caller handle it
+
+                for (int i = 0; i < 30 && display == null; i++)
+                {
+                    Thread.Sleep(100);
+                    display = FindActiveParsecDisplay();
+                }
+
+                if (display == null)
+                {
+                    error = "Added a virtual display but Windows hasn't reported it active yet. Try again in a moment.";
+                    return false;
+                }
+            }
+
+            // Best-effort: give it a normal, desktop-usable resolution. Failure
+            // here isn't fatal — StreamWorker reads whatever mode is current.
+            try { display.ChangeMode(1920, 1080, 60, Display.Orientation.Landscape); }
+            catch (Exception ex) { Log.Warn("ChangeMode(1920x1080) failed: {0}", ex.Message); }
+
+            return true;
+        }
+
+        void OnD92StatusChanged(D92.StreamWorker.Status status, string detail)
+        {
+            Invoke(() =>
+            {
+                UpdateD92MenuText();
+
+                if (status == D92.StreamWorker.Status.Disconnected
+                    || status == D92.StreamWorker.Status.CaptureSourceGone)
+                {
+                    TrayIcon.ShowBalloonTip(5000, Program.AppName,
+                        $"D92 streaming stopped: {status} ({detail}). " +
+                        "Per known hardware limits, a lost session needs a physical replug " +
+                        "before restarting — don't just click Start again.",
+                        ToolTipIcon.Warning);
+                }
+            });
+        }
+
+        void UpdateD92MenuText()
+        {
+            if (MI_D92 == null) return;
+
+            switch (D92Worker.CurrentStatus)
+            {
+                case D92.StreamWorker.Status.Streaming:
+                    MI_D92.Text = "Stop D92 Streaming";
+                    break;
+                default:
+                    MI_D92.Text = "Start D92 Streaming";
+                    break;
+            }
+        }
+
         public void QueryDriver(object sender, EventArgs e)
         {
             ShowApp();
@@ -623,6 +766,8 @@ namespace ParsecDisplay
 
         void Exit(object sender, EventArgs e)
         {
+            D92Worker?.Stop();
+
             var displays = Vdd.Core.GetDisplays();
             Log.Info("Exit requested ({0} displays, restore={1})", displays.Count, Config.RestoreDisplays);
             // Skip the "remove all displays?" prompt when restore is enabled —
