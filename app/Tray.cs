@@ -17,8 +17,6 @@ namespace ParsecDisplay
         NotifyIcon TrayIcon;
         Thread GuiThread;
 
-        ToolStripMenuItem MI_Language;
-
         ToolStripMenuItem MI_RunOnStartup;
         ToolStripMenuItem MI_KeepScreenOn;
 
@@ -70,7 +68,6 @@ namespace ParsecDisplay
 
             var appName = $"{Program.AppName} v{Program.AppVersion}";
             var appIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
-            var translateIcon = (Image)Properties.Resources.ResourceManager.GetObject("translate_icon");
 
             TrayIcon = new NotifyIcon()
             {
@@ -81,10 +78,7 @@ namespace ParsecDisplay
                 {
                     Items =
                     {
-                        new ToolStripMenuItem(appName, appIcon.ToBitmap(), QueryDriver),
-                        new ToolStripSeparator(),
                         (MI_D92 = new ToolStripMenuItem("D92 Streaming", null, ToggleD92Streaming)),
-                        new ToolStripMenuItem("Recover D92 (power cycle)", null, ManualRecoverD92),
                         new ToolStripSeparator(),
                         new ToolStripMenuItem("t_options")
                         {
@@ -96,21 +90,11 @@ namespace ParsecDisplay
                                     null, OptionsCheck) { CheckOnClick = true, Checked = Config.KeepScreenOn }),
                             }
                         },
-                        (MI_Language = new ToolStripMenuItem("t_language", translateIcon)),
                         new ToolStripSeparator(),
                         new ToolStripMenuItem("t_exit", null, Exit),
                     }
                 }
             };
-
-            var selectedLanguage = Config.Language;
-            foreach (var lang in App.Languages)
-            {
-                var item = new ToolStripMenuItem(lang, null, SetLanguage);
-                if (selectedLanguage == lang)
-                    item.Checked = true;
-                MI_Language.DropDownItems.Add(item);
-            }
 
             UpdateContent();
             UpdateD92MenuText();
@@ -118,6 +102,29 @@ namespace ParsecDisplay
             TrayIcon.Visible = true;
 
             PowerEvents.PowerModeChanged += OnPowerModeChanged;
+
+            AutoCreateVirtualDisplay();
+        }
+
+        /// <summary>Creates the D92-shaped virtual display as soon as the app
+        /// launches, so it's there as an extended Windows monitor right away
+        /// instead of only appearing once the user clicks "D92 Streaming".
+        /// Deliberately does NOT start D92Worker -- pushing frames to the
+        /// physical panel is still a separate, manual step from the tray
+        /// menu. Logs instead of popping a MessageBox on failure -- an error
+        /// dialog on every launch when the driver isn't ready yet would be
+        /// annoying, and the user can still see/fix it via the tray menu.</summary>
+        void AutoCreateVirtualDisplay()
+        {
+            try
+            {
+                if (!TryEnsureVirtualDisplay(out _, out var error))
+                    Log.Warn("AutoCreateVirtualDisplay: couldn't set up virtual display: {0}", error);
+            }
+            catch (Exception ex)
+            {
+                Log.Error("AutoCreateVirtualDisplay threw: {0}", ex);
+            }
         }
 
         private void WarnVddStatus(Device.Status status)
@@ -283,44 +290,6 @@ namespace ParsecDisplay
         /// StreamWorker. See D92/StreamWorker.cs for the capture/encode/push
         /// pipeline and D92/D92Device.cs for the wire protocol.
         /// </summary>
-        /// <summary>Manual, on-demand version of the same soft-replug
-        /// (UsbRecovery.TrySoftReplug) that StreamWorker tries automatically
-        /// on a write failure. Added because the automatic path only fires
-        /// when a write actually throws — it does nothing for the "writes
-        /// keep succeeding but the panel's own display pipeline silently died"
-        /// failure mode (WORK_SUMMARY.md §4.3 in the parent repo), which
-        /// apparently still happens after streaming runs a while. This button
-        /// is the manual fallback until that's diagnosed properly — it does
-        /// NOT restart streaming afterward, click "D92 Streaming" separately.</summary>
-        async void ManualRecoverD92(object sender, EventArgs e)
-        {
-            var menuItem = sender as ToolStripMenuItem;
-            if (menuItem != null) menuItem.Enabled = false;
-
-            try
-            {
-                D92Worker.Stop(); // don't fight over the handle with a live worker
-
-                Log.Info("ManualRecoverD92: starting recovery (power cycle, falling back to PnP restart)");
-                bool ok = await Task.Run(() => D92.UsbRecovery.TryFullRecover());
-
-                MessageBox.Show(Owner,
-                    ok ? "Recovery done (power cycle, or PnP restart fallback — check debug.log for which one worked). Click \"D92 Streaming\" to resume."
-                       : "Recovery failed (both power cycle and PnP restart). Check debug.log — likely not running elevated, or the device wasn't found.",
-                    Program.AppName, MessageBoxButtons.OK,
-                    ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
-            }
-            catch (Exception ex)
-            {
-                Log.Error("ManualRecoverD92 threw: {0}", ex);
-                MessageBox.Show(Owner, ex.Message, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-            finally
-            {
-                if (menuItem != null) menuItem.Enabled = true;
-            }
-        }
-
         void ToggleD92Streaming(object sender, EventArgs e)
         {
             if (Interlocked.Exchange(ref InD92Toggle, 1) != 0)
@@ -622,7 +591,7 @@ namespace ParsecDisplay
             }
 
             var items = TrayIcon.ContextMenuStrip.Items;
-            for (int i = 1; i < items.Count; i++)
+            for (int i = 0; i < items.Count; i++)
             {
                 UpdateItem(items[i], true);
             }
@@ -675,21 +644,6 @@ namespace ParsecDisplay
         public void Invoke(Action action)
         {
             TrayIcon.ContextMenuStrip.BeginInvoke(action);
-        }
-
-        private void SetLanguage(object sender, EventArgs e)
-        {
-            if (sender is ToolStripMenuItem mi)
-            {
-                // Recheck options
-                foreach (ToolStripMenuItem item in MI_Language.DropDownItems)
-                    item.Checked = mi == item;
-
-                // Update language
-                var lang = mi.Text;
-                App.SetLanguage(lang);
-                UpdateContent();
-            }
         }
     }
 }
