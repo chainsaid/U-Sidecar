@@ -3,6 +3,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 
@@ -79,6 +80,8 @@ namespace ParsecDisplay.D92
         Thread _thread;
         volatile bool _running;
         D92Device _device;
+        int _lastModeCorrectionTick = int.MinValue;
+        const int ModeCorrectionCooldownMs = 3000;
 
         public Status CurrentStatus { get; private set; } = Status.Idle;
         public event Action<Status, string> StatusChanged;
@@ -289,6 +292,8 @@ namespace ParsecDisplay.D92
             if (!TryGetDisplayBounds(gdiDeviceName, out var bounds))
                 return null;
 
+            EnforceNativeMode(gdiDeviceName, bounds);
+
             using (var raw = CaptureScreenRegion(bounds))
             {
                 var fitted = new Bitmap(CanvasH, CanvasW, PixelFormat.Format24bppRgb);
@@ -319,6 +324,56 @@ namespace ParsecDisplay.D92
                 }
                 fitted.RotateFlip(rft);
                 return fitted;
+            }
+        }
+
+        /// <summary>
+        /// The Parsec VDD driver bakes in ~26 preset resolutions (each with
+        /// several refresh rates) that always show up in Windows' Display
+        /// Settings resolution dropdown for this virtual monitor -- that list
+        /// is compiled into the driver itself (docs/PARSEC_VDD_SPECS.md,
+        /// docs/PARSEC_VDD_RE.md §8) and there's no documented way to hide or
+        /// remove them from a user-mode caller; EnsureD92CustomMode only adds
+        /// one more entry (the panel's native 1920x462) alongside those ~26,
+        /// it can't replace them. So the dropdown itself can't be trimmed
+        /// down to a single choice.
+        ///
+        /// What we *can* enforce is that streaming never actually runs at
+        /// anything other than the panel's native shape: if someone picks a
+        /// different resolution from that list while D92 streaming is
+        /// active, this snaps it back to CanvasH x CanvasW every time it
+        /// drifts (throttled so it doesn't fight a user actively dragging
+        /// through the dropdown). Checked every captured frame since
+        /// TryGetDisplayBounds is already called for that anyway.
+        /// </summary>
+        void EnforceNativeMode(string gdiDeviceName, Rectangle bounds)
+        {
+            if (bounds.Width == CanvasH && bounds.Height == CanvasW)
+                return;
+
+            int now = Environment.TickCount;
+            if (now - _lastModeCorrectionTick < ModeCorrectionCooldownMs)
+                return;
+            _lastModeCorrectionTick = now;
+
+            Log.Warn("D92 StreamWorker: virtual display drifted to {0}x{1}, forcing back to {2}x{3}",
+                bounds.Width, bounds.Height, CanvasH, CanvasW);
+            try
+            {
+                // Display's constructor is private -- can't build one directly,
+                // have to look it up the same way Tray.cs does.
+                var display = Display.GetAllDisplays()
+                    .FirstOrDefault(d => string.Equals(d.DeviceName, gdiDeviceName, StringComparison.Ordinal));
+                if (display == null)
+                {
+                    Log.Warn("D92 StreamWorker: couldn't find Display for {0} to correct its mode", gdiDeviceName);
+                    return;
+                }
+                display.ChangeMode(CanvasH, CanvasW, 60, Display.Orientation.Landscape);
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("D92 StreamWorker: failed to force resolution back: {0}", ex.Message);
             }
         }
 
