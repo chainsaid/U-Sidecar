@@ -44,7 +44,15 @@ namespace ParsecDisplay.D92
             /// on real hardware for a 1920x1080-shaped capture; re-check if the
             /// virtual display's native orientation changes.</summary>
             public int RotateDegrees = 270;
-            public int JpegQuality = 75;
+
+            /// <summary>JPEG quality 0-100 passed to the stock GDI+ encoder.
+            /// Bumped from the original 75 after it looked too soft on the
+            /// real panel -- 75 was carried over as a bandwidth-conscious
+            /// default, not something verified to look good on this device.
+            /// Larger frames still stream fine at IntervalMs below since the
+            /// loop just runs each frame back-to-back with no idle gap when
+            /// encode+push takes longer than the target interval (see Loop).</summary>
+            public int JpegQuality = 95;
 
             /// <summary>Target frame interval. 350ms (~2.9fps) was the only
             /// value systematically verified safe in the parent repo's testing
