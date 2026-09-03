@@ -93,7 +93,7 @@ constants, this C# port mirrors that logic):
 ## How to test
 
 1. `dotnet build parsec-vdd.sln` (already verified clean, 0 warnings/errors).
-2. Run `app/bin/D92Streaming.exe`, make sure the D92 is plugged in and the
+2. Run `app/bin/Debug/D92Streaming.exe` (or `bin/Release/...` for a release build), make sure the D92 is plugged in and the
    official MiraBox software is closed.
 3. Tray icon → **D92 Streaming**. Should show your desktop's virtual-display
    mirror on the panel, correctly oriented, no stretching.

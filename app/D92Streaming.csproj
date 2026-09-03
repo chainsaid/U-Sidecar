@@ -15,7 +15,7 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <OutputPath>bin\</OutputPath>
+    <OutputPath>bin\$(Configuration)\</OutputPath>
     <AssemblyName>D92Streaming</AssemblyName>
     <RootNamespace>ParsecDisplay</RootNamespace>
     <StartupObject>ParsecDisplay.Program</StartupObject>
