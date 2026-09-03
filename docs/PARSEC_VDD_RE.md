@@ -218,9 +218,9 @@ physical displays from a connected client:
 
 When combined with `IDD_DISPLAY` only mode, this gives Parsec's "Privacy
 Mode" — physical screens go dark while a virtual display drives the remote
-client. **Note:** this conflicts with standalone managers like ParsecDisplay;
-running both will fight over the topology. The README documents the
-workaround (clear `HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Connectivity`).
+client. **Note:** this conflicts with standalone managers like this app
+(U-Sidecar); running both will fight over the topology. The README documents
+the workaround (clear `HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Connectivity`).
 
 ---
 
@@ -258,7 +258,7 @@ A separate monitoring thread that handles driver disable/re-enable cycles
 - Adapter is dynamically re-created when the driver returns to a healthy state.
 
 This is what makes the Parsec host survive a driver upgrade without a
-restart — and the same pattern is mirrored in ParsecDisplay's
+restart — and the same pattern is mirrored in this app's
 `Vdd.Controller.StatusThread`.
 
 ---

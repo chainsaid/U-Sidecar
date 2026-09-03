@@ -1,11 +1,18 @@
-# D92 streaming — overnight implementation notes
+# D92 streaming — implementation notes
 
-Built while you were asleep, following the plan discussed earlier. Read this
-before testing.
+Running log of implementation decisions, bugs found and fixed, and dead
+ends for the D92 sidecar-screen streaming feature (now part of U-Sidecar —
+see the top-level [README.md](README.md) for the current app-wide picture;
+this file stays D92-specific). Entries are in roughly chronological order,
+oldest first — later entries correct or supersede earlier ones rather than
+editing them in place, so read to the bottom before trusting anything here,
+and check current file paths against the actual tree (`app/Devices/D92/`,
+`app/Streaming/`) since some described below predate the multi-device
+refactor.
 
-## What's here
+## What's here (as originally built, see later updates for what moved)
 
-- `app/D92/D92Device.cs` — C# port of the StreamDock D92 HID protocol
+- `app/D92/D92Device.cs` (now `app/Devices/D92/D92Device.cs`) — C# port of the StreamDock D92 HID protocol
   (`streamdock.py` in the parent RE repo is the reference). Finds the device
   by VID 0x5548/PID 0x1011 via SetupAPI, opens it with `CreateFileW` +
   `WriteFile`/`OVERLAPPED` (not `HidD_SetOutputReport`, confirmed not to work
@@ -14,7 +21,7 @@ before testing.
   commands. Rotation (`SET`) is intentionally **not** implemented — per the
   parent repo's findings it has no observed effect on the device; always
   rotate host-side before encoding, same as the Python driver does.
-- `app/D92/StreamWorker.cs` — background capture→fit→rotate→encode→push loop.
+- `app/D92/StreamWorker.cs` (now `app/Streaming/StreamWorker.cs`) — background capture→fit→rotate→encode→push loop.
   Captures a chosen GDI display via `BitBlt` (same technique as the existing
   `MirrorWindow.cs`, but off-screen instead of to a preview window),
   letterbox-fits it into the panel's pre-rotation canvas shape (1920×462),

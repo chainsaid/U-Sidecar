@@ -1,305 +1,150 @@
-<!-- tracking -->
-<img src="https://i.imgur.com/dDUa6GH.png" width="0" height="0" />
+# U-Sidecar
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/user-attachments/assets/74e7db71-6166-49ae-b6c5-7543b15c60eb">
-    <img alt="Parsec Virtual Display Driver" src="https://github.com/user-attachments/assets/57202381-021c-428a-ae38-0fc4b2e0ee0c">
-  </picture>
-</p>
+A Windows tray app that mirrors your desktop onto small USB "sidecar"
+screens — secondary panels like the MiraBox StreamDock D92 that plug in
+over USB and show a slice of your desktop. U-Sidecar drives one of these
+panels directly: it creates a virtual display sized to the panel, captures
+it, and streams it over the panel's own wire protocol — no vendor software
+required.
 
-<p align="center">
-  ✨ Perfect <strong>virtual display</strong> for game streaming
-</p>
+D92 is the only panel supported today, but the device layer is written so
+adding another model doesn't touch the streaming/UI code — see
+[Architecture](#architecture) below.
 
-<p align="center">
-  <a href="#">
-    <img src="https://img.shields.io/github/stars/nomi-san/parsec-vdd?style=for-the-badge&logo=github" />
-  </a>
-  <a href="https://github.com/nomi-san/parsec-vdd/releases">
-    <img src="https://img.shields.io/github/downloads/nomi-san/parsec-vdd/total?style=for-the-badge" />
-  </a>
-</p>
+## Features
 
-<br>
+- **Auto-detect and stream** — plug the panel in, U-Sidecar finds it and
+  can start mirroring automatically (Options → "Auto-start when plugged in").
+- **Survives sleep/resume and reconnects** — replays the panel's own
+  wake sequence on every connect, which fixes the "panel goes black after
+  a while" failure mode this app had early on (see
+  [D92_NOTES.md](D92_NOTES.md) for the debugging history).
+- **Locked to the panel's native resolution** — even though the
+  underlying virtual-display driver always offers a long list of desktop
+  resolutions, U-Sidecar snaps back to the panel's actual shape if that
+  drifts.
+- **CLI mode** for scripting virtual displays directly (inherited from the
+  driver this is built on — see [docs/VDD_CLI_USAGE.md](docs/VDD_CLI_USAGE.md)).
 
-## ℹ About
+## Requirements
 
-This project provides a **standalone solution for creating virtual displays** on
-a Windows host using the **Parsec Virtual Display Driver** (VDD), independent of
-the **Parsec app**.
+- Windows 10 1607+ (see [driver version table](docs/PARSEC_VDD_SPECS.md)
+  for exact IddCx requirements).
+- Administrator rights. U-Sidecar needs these to register the panel's
+  resolution with the virtual-display driver
+  (`HKLM\SOFTWARE\Parsec\vdd`) — it will prompt for elevation on launch.
+- The [Parsec Virtual Display Driver](#credits) installed (bundled with
+  the setup installer; see below if installing manually).
 
-The Parsec VDD enables virtual displays on Windows 10+ systems, a feature
-available to Parsec Teams and Warp customers. With VDD, users can add up to
-three virtual displays to a host machine they connect to, ideal for setups where
-physical monitors may be unavailable or when additional displays are beneficial.
+## Install
 
-Built by Parsec, the VDD leverages the IddCx API (Indirect Display Driver) to
-generate virtual displays with support for high resolutions and refresh rates,
-including up to 4K and 240 Hz. This capability makes it a versatile tool for
-gaming, streaming, or remote work, allowing users to simulate multiple screens
-for an enhanced, flexible visual experience.
+Download the latest setup installer from
+[Releases](https://github.com/chainsaid/U-Sidecar/releases) and run it.
+It installs U-Sidecar, registers it to launch on startup (optional), and
+does not touch the VDD driver install if one is already present.
 
-## 💡 Use cases
-
-- **Game streaming** with [Parsec](https://parsec.app),
-  [Sunshine](https://github.com/LizardByte/Sunshine) /
-  [Moonlight](https://moonlight-stream.org), or Steam Remote Play — host at
-  the exact streaming resolution and refresh rate without depending on a
-  physical monitor's spec.
-- **Headless hosts and cloud VMs** — Windows machines with no monitor attached
-  (build servers, gaming VMs, cloud GPU instances). VDD gives them a real
-  desktop session so capture tools, launchers, and benchmarks that refuse to
-  run without an active display keep working.
-- **AR / XR workspaces** — feed several virtual monitors into AR glasses or
-  headset-based desktop projects (see [Verto_XR](https://github.com/rohitsangwan01/Verto_XR) below).
-- **Multi-monitor productivity** — extend a laptop without docking; preview /
-  test multi-display layouts without buying physical screens.
-- **Hyper-V / GPU-PV guests** — the hypervisor's built-in Hyper-V monitor
-  can't be disconnected, which prevents Parsec / Sunshine from falling back
-  to their own virtual display. Adding VDD inside the guest gives the streaming
-  host a controllable target.
-- **High-refresh capture & recording** — record at the exact resolution and
-  refresh rate the encoder wants (e.g. 1080p@240Hz, 4K@120Hz) without
-  cropping or rescaling from a physical monitor's native mode.
-- **Privacy mode** — pair a virtual display for the remote session with the
-  physical monitor for local use, keeping the two desktops independent.
-
-## 📺 ParsecDisplay App
-
-ParsecDisplay is a virtual display manager for Parsec VDD, built with C# and
-WPF. It provides a tray-based interface to add and remove virtual displays,
-change their resolution, refresh rate, and orientation, capture screenshots,
-and more.
-
-👉 Check out [Releases](https://github.com/nomi-san/parsec-vdd/releases) to
-download it.
-
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/2c014dbb-2358-4906-90fb-f94a62087065" />
-</p>
-
-## 🚀 Using Core API
-
-### Design notes
-
-Parsec VDD is designed to work with Parsec client-connection sessions. When
-the user connects to the host, the app starts controlling the driver —
-sending IO control codes and receiving results. Adding a virtual display
-returns an index, used later to unplug it; up to 16 displays can be added
-per adapter. The driver must be pinged periodically to keep added displays
-alive, otherwise all of them will be unplugged after about a second. There
-is no direct way to manipulate added displays — call the Win32 Display API
-to change their display mode (see the ParsecDisplay source).
-
-```mermaid
-flowchart LR
-  A(app)
-  B(vdd)
-
-  A <--->|ioctl| B
-  A ..->|ping| B
-
-  B --- X(display1)
-  B --- Y(display2)
-  B --- Z(display3)
-
-  winapi -->|manipulate| X
-```
-
-### Using the code
-
-For detailed instructions and usage examples, refer to the [VDD_LIBRARY_USAGE](./docs/VDD_LIBRARY_USAGE.md).
-
-- The core API is designed as a single C/C++ header that can be added to any
-  project, 👉 [core/parsec-vdd.h](./core/parsec-vdd.h)
-- There is also a simple demo program, 👉 [core/vdd-demo.cc](./core/vdd-demo.cc)
-
-### Picking a driver
-
-You have to install the driver before any virtual displays can be created.
-
-| Version           | Minimum OS      | IddCx | Notes                                                     |
-| :---------------- | :-------------- | :---: | :-------------------------------------------------------- |
-| [parsec-vdd-0.38] | Windows 10 1607 |  1.0  | Obsolete, may crash randomly.                             |
-| [parsec-vdd-0.41] | Windows 10 19H2 |  1.4  | Stable.                                                   |
-| [parsec-vdd-0.45] | Windows 10 21H2 |  1.5  | Better streaming color, but may not work on some Windows. |
-
-[parsec-vdd-0.38]: https://builds.parsec.app/vdd/parsec-vdd-0.38.0.0.exe
-[parsec-vdd-0.41]: https://builds.parsec.app/vdd/parsec-vdd-0.41.0.0.exe
-[parsec-vdd-0.45]: https://builds.parsec.app/vdd/parsec-vdd-0.45.0.0.exe
-
-> All of them also work on Windows Server 2019 or higher.
-
-You can unzip (using 7z) the driver setup above to obtain the driver files and
-`nefconw` CLI.
+### Build from source
 
 ```
-vdd-0.45/
-  |__ nefconw.exe
-  |__ driver/
-    |__ mm.cat
-    |__ mm.dll
-    |__ mm.inf
+git clone https://github.com/chainsaid/U-Sidecar.git
+cd U-Sidecar
+dotnet build app/USidecar.csproj -c Release
 ```
 
-Command line method to install the driver using `nefconw` (admin required):
+Output lands in `app/bin/Release/`. Requires the .NET Framework 4.7.2
+targeting pack (or pass `-p:TargetFramework=net480` for 4.8). Running the
+build itself doesn't need admin rights — only running the resulting exe
+does.
+
+### Local installer package
+
+`setup.iss` (repo root) is an [Inno Setup](https://jrsoftware.org/isinfo.php)
+script. To build an installer locally without going through CI/signing:
 
 ```
-start /wait .\nefconw.exe --remove-device-node --hardware-id Root\Parsec\VDA --class-guid "4D36E968-E325-11CE-BFC1-08002BE10318"
-start /wait .\nefconw.exe --create-device-node --class-name Display --class-guid "4D36E968-E325-11CE-BFC1-08002BE10318" --hardware-id Root\Parsec\VDA
-start /wait .\nefconw.exe --install-driver --inf-path ".\driver\mm.inf"
+dotnet build app/USidecar.csproj -c Release
+mkdir bin
+copy app\bin\Release\USidecar.exe bin\
+copy app\bin\Release\USidecar.exe.config bin\
+copy app\bin\Release\vdd.cmd bin\
+iscc setup.iss
 ```
 
-In addition, you can run the driver setup in silent mode to install it quickly.
+The signed release builds (from [Releases](https://github.com/chainsaid/U-Sidecar/releases))
+go through the same script via `.github/workflows/publish.yml`, code-signed
+by [SignPath.io](#credits).
+
+## Architecture
 
 ```
-.\parsec-vdd-0.45.0.0.exe /S
+app/
+  Devices/              — sidecar-screen device abstraction
+    ISidecarDevice.cs      — one open session (WakeUp, SendFrame)
+    SidecarDeviceRegistry.cs — every known device model
+    D92/                  — the D92 implementation (only one today)
+  Streaming/
+    StreamWorker.cs       — capture → letterbox → rotate → encode → push loop,
+                            generic over whatever ISidecarDeviceDescriptor
+                            it's given
+  Tray.cs                — tray menu, options, virtual-display setup
+  Vdd/                   — Parsec VDD driver client (unrelated to the
+                            panel protocol — this manages the *virtual
+                            display* U-Sidecar captures from)
 ```
 
-## 😥 Known Limitations
+Adding a new panel model means writing one `ISidecarDeviceDescriptor` +
+one `ISidecarDevice` implementation under `Devices/<model>/` and
+registering it in `SidecarDeviceRegistry.Known` — `StreamWorker` and
+`Tray.cs` don't need to know it exists.
 
-> This list shows the known limitations of Parsec VDD.
+The D92's own wire protocol (what bytes actually go over USB) was
+reverse-engineered in the parent repository, not here — see that repo's
+`WORK_SUMMARY.md` for the full evidence trail (packet captures, firmware
+disassembly, protocol tables) if you're porting a new device or debugging
+the D92 implementation.
 
-### 1. HDR support
+## Development notes
 
-Parsec VDD does not support HDR on its displays (see the EDID below).
-Theoretically, you can unlock support by editing the EDID to include HDR
-metadata and a 10-bit+ color depth. Unfortunately, you cannot flash its
-firmware the way you would a physical monitor — there is no registry
-setting to toggle either.
+[D92_NOTES.md](D92_NOTES.md) is a running log of implementation decisions,
+bugs found and fixed, and dead ends — most usefully the black-screen
+debugging history, since that failure mode is the one thing worth
+understanding before changing anything in `Streaming/StreamWorker.cs` or
+`Devices/*/*.cs`.
 
-All IDDs have their own fixed EDID block inside the driver binary to initialize
-the monitor specs. So the solution is to modify this block in the driver DLL
-(mm.dll), then reinstall it with `nefconw` CLI (see above).
+Other reference docs (mostly about the underlying VDD driver itself,
+inherited from the project this was built on — not U-Sidecar-specific):
 
-### 2. Custom resolutions
+- [docs/PARSEC_VDD_SPECS.md](docs/PARSEC_VDD_SPECS.md) — driver preset
+  resolutions, adapter/monitor identity, EDID.
+- [docs/PARSEC_VDD_RE.md](docs/PARSEC_VDD_RE.md) — reverse-engineered
+  IOCTL protocol for anyone reimplementing the driver client.
+- [docs/VDD_CLI_USAGE.md](docs/VDD_CLI_USAGE.md) — the `vdd` CLI mode.
+- [docs/VDD_LIBRARY_USAGE.md](docs/VDD_LIBRARY_USAGE.md) — the C/C++
+  driver API (`core/parsec-vdd.h`), for embedding VDD control in another
+  app entirely.
 
-Before connecting, the virtual display looks in the `HKLM\SOFTWARE\Parsec\vdd`
-registry for additional preset resolutions. Currently this supports a maximum
-of 5 entries.
+## Known limitations
 
-```yaml
-HKLM\SOFTWARE\Parsec\vdd:
-  - key: [0 -> 5]
-    value: { width, height, hz }
-```
+Inherited from the VDD driver (see
+[docs/PARSEC_VDD_SPECS.md](docs/PARSEC_VDD_SPECS.md)):
 
-To unlock this limit, you need to patch the driver DLL the same way as above,
-but **5 is enough** for personal use.
+- No HDR support.
+- Custom resolution presets are capped at 5 entries in
+  `HKLM\SOFTWARE\Parsec\vdd`, shared system-wide with any other software
+  using the same driver (including the real Parsec app, if installed) —
+  U-Sidecar merges into this table rather than overwriting it.
+- Requires an interactive user session; won't run before login on a
+  headless/auto-login-disabled host.
 
-## 😑 Known Bugs
+## Credits
 
-> This is a list of known issues when working with standalone Parsec VDD.
+- Virtual display support is powered by the
+  [Parsec Virtual Display Driver](https://github.com/nomi-san/parsec-vdd),
+  the project this app was originally forked from.
+- Code signing for release builds provided by
+  [SignPath.io](https://signpath.io), certificate by
+  [SignPath Foundation](https://signpath.org).
 
-### 1. Incompatible with Parsec Privacy Mode
+## License
 
-![Alt text](https://i.imgur.com/C74IRgC.png)
-
-If you have enabled "Privacy Mode" in Parsec Host settings, please disable it
-and clear the connected display configurations in the following Registry path.
-
-```
-HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Connectivity
-```
-
-This option causes your main display to turn off when virtual displays are
-added, making it difficult to turn the main display back on and disrupting
-the remote desktop session.
-
-### 2. Windows 10 Connectivity registry quirk
-
-Windows 10 caches display arrangements keyed by the _combination_ of attached
-display IDs. When a middle display is unplugged, the remaining subset
-(e.g. `DISP001_DISP003`) is a new combo Windows hasn't seen — those displays
-fall back to default mode and arrangement.
-
-The app works around this by always unplugging **right-to-left** (latest
-driver index first) during sleep, exit, and `vdd remove all`. See
-[issue #23](https://github.com/nomi-san/parsec-vdd/issues/23)
-for the full write-up.
-
-### 3. Headless before user login
-
-The app is a GUI process and requires an interactive user session (Vista+
-session 0 isolation). On a freshly-booted headless host with no auto-login,
-nothing runs until the user signs in. Workarounds:
-
-- Enable auto-login on the host.
-- Or use a Task Scheduler entry that runs at logon with desktop interaction.
-- Or use the service-based fork
-  [ParsecVDA-Always-Connected](https://github.com/timminator/ParsecVDA-Always-Connected)
-  for fully headless single-display deployments.
-
-## 🤔 Comparison with other IDDs
-
-The table below shows a comparison with other popular Indirect Display Driver
-projects.
-
-| Project                        | Iddcx version | Signed | Gaming | HDR  | H-Cursor | Tweakable | Controller |
-| :----------------------------- | :-----------: | :----: | :----: | :--: | :------: | :-------: | :--------: |
-| [usbmmidd_v2]                  |      N/A      |   ✅   |   ❌   | ❌  |   ❌    |    🆗     |    ❌     |
-| [IddSampleDriver]              |      1.2      |   ❌   |   🆗   | ❌  |   ❌    |    🆗     |    ❌     |
-| [RustDeskIddDriver]            |      1.2      |   ❌   |   ❌   | ❌  |   ❌    |    🆗     |    ❌     |
-| [Virtual-Display-Driver (HDR)] |      1.10     |   ✅   |   ✅   | ✅  |   ✅    |    ✅     |    ❌     |
-| [virtual-display-rs]           |      1.5      |   ❌   |   ✅   | ❌  |   ✅    |    ✅     |    ✅     |
-| parsec-vdd                     |      1.5      |   ✅   |   ✅   | ❌  |   ✅    |    🆗     |    ✅     |
-
-✅ - full support, 🆗 - limited support
-
-[usbmmidd_v2]: https://www.amyuni.com/forum/viewtopic.php?t=3030
-[IddSampleDriver]: https://github.com/roshkins/IddSampleDriver
-[RustDeskIddDriver]: https://github.com/fufesou/RustDeskIddDriver
-[virtual-display-rs]: https://github.com/MolotovCherry/virtual-display-rs
-[Virtual-Display-Driver (HDR)]: https://github.com/itsmikethetech/Virtual-Display-Driver
-
-**Signed** means the driver files have a valid digital signature.
-**H-Cursor** means hardware-cursor support — without it, you get a double
-cursor on some remote desktop apps. **Tweakable** is the ability to customize
-display modes. Visit
-[MSDN IddCx versions](https://learn.microsoft.com/en-us/windows-hardware/drivers/display/iddcx-versions)
-to check the minimum supported Windows version.
-
-## 🔗 Projects using Parsec VDD
-
-Third-party libraries and apps built on top of the Parsec VDD driver:
-
-- [parsec-vdd-rust](https://github.com/rohitsangwan01/parsec-vdd-rust) —
-  Rust port of the core VDD API. Drop-in for Rust projects that need to
-  add/remove virtual displays and keep them alive.
-- [Verto_XR](https://github.com/rohitsangwan01/Verto_XR) — XR / AR-glasses
-  desktop workspace that uses VDD as the source for its virtual monitors.
-- [ParsecVDA-Always-Connected](https://github.com/timminator/ParsecVDA-Always-Connected) —
-  service-based fork that keeps a single virtual display alive across reboots
-  and power events, aimed at headless hosts.
-
-Open a PR if you'd like to add your project here.
-
-## 📘 Parsec VDD Specs
-
-Common preset display modes:
-
-| Resolution  | Common Name | Aspect Ratio | Refresh Rates (Hz) |
-| ----------- | ----------- | ------------ | ------------------ |
-| 3840 x 2160 | 4K UHD      | 16:9         | 24/30/60/144/240   |
-| 3440 x 1440 | UltraWide   | 21.5:9       | 24/30/60/144/240   |
-| 2560 x 1440 | 2K          | 16:9         | 24/30/60/144/240   |
-| 2560 x 1080 | UltraWide   | 21:9         | 24/30/60/144/240   |
-| 1920 x 1080 | FHD         | 16:9         | 24/30/60/144/240   |
-| 1600 x 900  | HD+         | 16:9         | 60/144/240         |
-| 1280 x 720  | HD          | 16:9         | 60/144/240         |
-
-Check out [docs/PARSEC_VDD_SPECS](./docs/PARSEC_VDD_SPECS.md) for the full
-list of preset display modes and driver specs.
-
-## 🍻 Credits
-
-- Thanks to Parsec for the driver
-- The app's background was from old parsecgaming.com
-
-<table>
-  <tr>
-    <td><img src="https://github.com/user-attachments/assets/58e9a6f4-6630-437d-a758-b284c0ed41e7" /></td>
-    <td>Trusted code signing on Windows provided by <a href="https://signpath.io">SignPath.io</a>, certificate by <a href="https://signpath.org">SignPath Foundation</a></td>
-  </tr>
-</table>
+[MIT](LICENSE)

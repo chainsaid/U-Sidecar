@@ -1,12 +1,13 @@
 # Command Line Interface
 
-This is detailed help for CLI mode of the ParsecDisplay app. The CLI executable
-(`vdd`) can be installed via setup installer and can be invoked via command line
-environment.
+This is detailed help for CLI mode of U-Sidecar (`app/CLI.cs`) — a generic
+virtual-display management surface inherited from the parsec-vdd project
+this app is built on, kept alongside U-Sidecar's own D92 sidecar-screen
+streaming feature. The CLI executable (`vdd.cmd`, wrapping `USidecar.exe
+-cli`) is installed alongside the app by the setup installer.
 
-> Check out the [Releases page](https://github.com/nomi-san/parsec-vdd/releases)
-> to get the setup installer (from v1.0) which has filename ends with
-> `-setup.exe`.
+> Check out this repo's [Releases page](https://github.com/chainsaid/U-Sidecar/releases)
+> to get the setup installer.
 
 ## Usage
 
