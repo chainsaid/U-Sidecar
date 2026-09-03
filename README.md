@@ -18,7 +18,7 @@ adding another model doesn't touch the streaming/UI code — see
 - **Survives sleep/resume and reconnects** — replays the panel's own
   wake sequence on every connect, which fixes the "panel goes black after
   a while" failure mode this app had early on (see
-  [D92_NOTES.md](D92_NOTES.md) for the debugging history).
+  [D92_NOTES.md](docs/D92_NOTES.md) for the debugging history).
 - **Locked to the panel's native resolution** — even though the
   underlying virtual-display driver always offers a long list of desktop
   resolutions, U-Sidecar snaps back to the panel's actual shape if that
@@ -105,7 +105,7 @@ the D92 implementation.
 
 ## Development notes
 
-[D92_NOTES.md](D92_NOTES.md) is a running log of implementation decisions,
+[D92_NOTES.md](docs/D92_NOTES.md) is a running log of implementation decisions,
 bugs found and fixed, and dead ends — most usefully the black-screen
 debugging history, since that failure mode is the one thing worth
 understanding before changing anything in `Streaming/StreamWorker.cs` or

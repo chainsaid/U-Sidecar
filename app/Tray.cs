@@ -34,7 +34,7 @@ namespace ParsecDisplay
         // Whether D92 streaming was active when PBT_APMSUSPEND fired, so
         // OnResume knows whether to restart it. Single-purpose replacement
         // for the generic multi-display suspend/resume snapshot this build
-        // no longer carries (see D92_NOTES.md — the app is locked to exactly
+        // no longer carries (see docs/D92_NOTES.md — the app is locked to exactly
         // one D92-shaped virtual display now, not user-managed ones).
         bool WasStreamingBeforeSuspend;
 

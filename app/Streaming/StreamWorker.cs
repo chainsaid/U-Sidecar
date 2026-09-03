@@ -241,7 +241,7 @@ namespace ParsecDisplay.Streaming
         /// given) and replay its wake sequence. Confirmed on real D92
         /// hardware (parent repo's WORK_SUMMARY.md §8.13) to revive a panel
         /// left black by a plain reopen -- no PnP disable/enable or USB hub
-        /// power-cycle needed, which earlier testing (§8.11, D92_NOTES.md
+        /// power-cycle needed, which earlier testing (§8.11, docs/D92_NOTES.md
         /// "Update 2") found did NOT fix a dead panel on their own anyway.
         /// UsbRecovery.TryFullRecover() is kept only as a last-resort fallback
         /// for the case where the device isn't enumerating at all (actually
