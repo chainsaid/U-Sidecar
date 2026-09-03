@@ -43,15 +43,27 @@ namespace ParsecDisplay.D92
             /// virtual display's native orientation changes.</summary>
             public int RotateDegrees = 270;
             public int JpegQuality = 75;
-            public int IntervalMs = 350; // matches streamdock.py's verified-safe 0.35s
+
+            /// <summary>Target frame interval. 350ms (~2.9fps) was the only
+            /// value systematically verified safe in the parent repo's testing
+            /// (WORK_SUMMARY.md §7.5 flags anything faster as untested); the
+            /// official app reportedly runs 40-100ms (10-25fps) without issue.
+            /// 33ms (~30fps) requested for smoother mirroring — if the known
+            /// intermittent USB dropout (§4.1 there) starts happening
+            /// noticeably more often at this rate, back off toward 50-67ms
+            /// before assuming it's a new bug.</summary>
+            public int IntervalMs = 33;
             public bool DrawCursor = true;
         }
 
         // Panel canvas, pre-rotation "landscape" shape — see WORK_SUMMARY.md §8.7:
         // the official app authors content on a 1920x462 canvas and rotates before
-        // push, matching the panel's apparent native orientation.
-        const int CanvasW = 462;
-        const int CanvasH = 1920;
+        // push, matching the panel's apparent native orientation. Public so the
+        // caller can lock a virtual display to this exact resolution (see
+        // Tray.TryEnsureVirtualDisplay) — at 1:1 the letterbox-fit below becomes
+        // a no-op instead of scaling.
+        public const int CanvasW = 462;
+        public const int CanvasH = 1920;
 
         readonly Options _opts;
         Thread _thread;

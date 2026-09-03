@@ -105,3 +105,41 @@ constants, this C# port mirrors that logic):
 
 Nothing was pushed to the remote — both this repo and the parent repo have
 local commits only, ready for you to review and push.
+
+## Update (same night, after user testing)
+
+Confirmed working end to end on real hardware. Fixed along the way:
+
+- **Resolution was wrong / not visible in Windows' display settings**: the
+  VDD driver only offers a small fixed set of desktop-shaped presets by
+  default; `ChangeMode(1920, 462)` silently failed because that mode simply
+  wasn't in the display's enumerated mode list. Fixed by writing it into the
+  driver's custom-mode registry preset (`Vdd.Utils.SetCustomDisplayModes`,
+  `HKLM\SOFTWARE\Parsec\vdd`) at startup (`Tray.EnsureD92CustomMode`), which
+  requires admin — **`app.manifest` now requests `requireAdministrator`, so
+  the app UACs on every launch.** `TryEnsureVirtualDisplay` also now always
+  removes+recreates an existing Parsec display rather than reusing it, since
+  a display created before the preset was written won't pick up the new mode
+  without being recreated.
+- **Removed the generic multi-display management UI entirely** per request:
+  tray menu no longer has Add/Remove display or Restore/Fallback options;
+  `Config.RestoreDisplays`/`SavedDisplays`/`FallbackDisplay` are gone.
+  `MainWindow` (the old "add displays" dashboard) is never shown anymore —
+  `App.xaml.cs` constructs it (still needed for its Win32 handle, used as the
+  MessageBox owner) but skips `.Show()`. Its XAML/code-behind and
+  `Components/DisplayItem.xaml.cs` are untouched/dead code, kept only so
+  `Tray.AddDisplay`/`RemoveDisplay` (thin pass-throughs, unreachable from any
+  normal flow now) satisfy those files' references and the app keeps
+  building without touching XAML.
+- **Frame interval dropped from 350ms to 33ms** (~30fps) on request — see the
+  doc comment on `StreamWorker.Options.IntervalMs` for the risk note (this is
+  well past the 350ms value that was actually verified safe in the parent
+  repo's testing; back off toward 50-67ms if dropouts get noticeably worse).
+
+**Known issue, confirmed still present**: the intermittent USB dropout from
+the parent repo's WORK_SUMMARY.md §4.1 still happens with this pipeline —
+user confirmed "会掉线" (does drop) after testing. Per the no-auto-reopen
+policy, `StreamWorker` stops and reports `Status.Disconnected` rather than
+retrying; a physical replug is needed before starting again. Not investigated
+further tonight — root-causing that dropout (independent of this C# port) is
+still open work.

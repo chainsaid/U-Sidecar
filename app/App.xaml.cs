@@ -25,13 +25,13 @@ namespace ParsecDisplay
             RenderOptions.ProcessRenderMode = RenderMode.SoftwareOnly;
             base.OnStartup(e);
 
-            var silent = e.Args.Contains("-silent");
+            // The D92 build is tray-only: MainWindow (the generic "add/manage
+            // virtual displays" dashboard) is still constructed so its Win32
+            // handle is available for MessageBox owner parenting (see
+            // Tray.Owner), but it's never shown — display lifecycle is fully
+            // owned by the "D92 Streaming" tray menu item now, not by the
+            // user manually adding/removing displays here.
             var window = new MainWindow();
-
-            if (!silent)
-            {
-                window.Show();
-            }
 
             SetLanguage(Config.Language, false);
         }

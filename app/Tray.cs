@@ -19,27 +19,19 @@ namespace ParsecDisplay
         ToolStripMenuItem MI_Language;
 
         ToolStripMenuItem MI_RunOnStartup;
-        ToolStripMenuItem MI_RestoreDisplays;
-        ToolStripMenuItem MI_FallbackDisplay;
         ToolStripMenuItem MI_KeepScreenOn;
-
-        // Snapshot captured at PBT_APMSUSPEND so we can restore on wake.
-        // Lives only for the duration of one suspend/resume cycle.
-        List<Display.State> SuspendSnapshot;
 
         // Windows fires multiple resume events (RESUMESUSPEND, RESUMEAUTOMATIC,
         // possibly RESUMESTANDBY) within ~100ms. We only want to run the
-        // restore path once per cycle. Reset by the next suspend.
+        // resume path once per cycle. Reset by the next suspend.
         int ResumeHandled;
 
-        // Guards against re-entering AddDisplay before the previous attempt
-        // has fully unwound (the MainWindow.DisplayChanged fallback path can
-        // re-trigger us while we're still showing the error MessageBox).
-        int InAddDisplay;
-
-        // Driver index of the fallback display we auto-added because the host
-        // had no physical display. -1 = not active. Reset on suspend.
-        int FallbackDriverIndex = -1;
+        // Whether D92 streaming was active when PBT_APMSUSPEND fired, so
+        // OnResume knows whether to restart it. Single-purpose replacement
+        // for the generic multi-display suspend/resume snapshot this build
+        // no longer carries (see D92_NOTES.md — the app is locked to exactly
+        // one D92-shaped virtual display now, not user-managed ones).
+        bool WasStreamingBeforeSuspend;
 
         // D92 panel streaming (see D92/StreamWorker.cs). Not localized (t_*)
         // yet — Text is set directly in code, see UpdateD92MenuText.
@@ -47,21 +39,11 @@ namespace ParsecDisplay
         ToolStripMenuItem MI_D92;
         int InD92Toggle;
 
-        // 1-second debounce — Windows fires multiple DisplaySettingsChanged
-        // events in a storm during display changes; we only act on the trailing
-        // edge so we don't flap displays during transitions.
-        System.Threading.Timer FallbackTimer;
-        const int FallbackEvaluateDelayMs = 1000;
-
         //  ParsecDisplay v{version}
         //  ______________
-        //  Add display
-        //  Remove last display
+        //  D92 Streaming
         //  --------------
         //  Options        >   Run on startup
-        //                 |   Restore displays
-        //                 |   --------------
-        //                 |   Fallback display
         //                 |   Keep screen on
         //  Language       >   {lang_1}
         //                 |   {lang_2}
@@ -75,6 +57,8 @@ namespace ParsecDisplay
             Log.Info("Tray initializing");
             Instance = this;
             Vdd.Controller.Start();
+
+            EnsureD92CustomMode();
 
             D92Worker = new D92.StreamWorker();
             D92Worker.StatusChanged += OnD92StatusChanged;
@@ -99,9 +83,6 @@ namespace ParsecDisplay
                     {
                         new ToolStripMenuItem(appName, appIcon.ToBitmap(), QueryDriver),
                         new ToolStripSeparator(),
-                        new ToolStripMenuItem("t_add_display", null, AddDisplay),
-                        new ToolStripMenuItem("t_remove_last_display", null, RemoveLastDisplay),
-                        new ToolStripSeparator(),
                         (MI_D92 = new ToolStripMenuItem("D92 Streaming", null, ToggleD92Streaming)),
                         new ToolStripSeparator(),
                         new ToolStripMenuItem("t_options")
@@ -110,11 +91,6 @@ namespace ParsecDisplay
                             {
                                 (MI_RunOnStartup = new ToolStripMenuItem("t_run_on_startup",
                                     null, OptionsCheck) { CheckOnClick = true, Checked = Config.RunOnStartup }),
-                                (MI_RestoreDisplays = new ToolStripMenuItem("t_restore_displays",
-                                    null, OptionsCheck) { CheckOnClick = true, Checked = Config.RestoreDisplays }),
-                                new ToolStripSeparator(),
-                                (MI_FallbackDisplay = new ToolStripMenuItem("t_fallback_display",
-                                    null, OptionsCheck) { CheckOnClick = true, Checked = Config.FallbackDisplay }),
                                 (MI_KeepScreenOn = new ToolStripMenuItem("t_keep_screen_on",
                                     null, OptionsCheck) { CheckOnClick = true, Checked = Config.KeepScreenOn }),
                             }
@@ -139,33 +115,9 @@ namespace ParsecDisplay
             UpdateContent();
             UpdateD92MenuText();
 
-            TrayIcon.DoubleClick += delegate { ShowApp(); };
             TrayIcon.Visible = true;
 
-            FallbackTimer = new System.Threading.Timer(EvaluateFallback,
-                null, Timeout.Infinite, Timeout.Infinite);
-
-            SystemEvents.SessionEnding += SaveDisplayState;
-            SystemEvents.SessionSwitch += SaveDisplayState;
-            SystemEvents.DisplaySettingsChanged += SaveDisplayState;
-            SystemEvents.DisplaySettingsChanged += ScheduleFallbackEvaluation;
             PowerEvents.PowerModeChanged += OnPowerModeChanged;
-
-            // Restore previously-saved displays as soon as the driver handle is ready.
-            // Runs on a background thread so the tray construction doesn't block.
-            Task.Run(() =>
-            {
-                if (!Vdd.Controller.WaitForReady(10000))
-                    return;
-
-                RestoreDisplays();
-
-                // Headless boot has no displays, so DisplaySettingsChanged never
-                // fires — meaning the fallback evaluator would never run. Kick
-                // it once explicitly so a fallback display gets added when the
-                // host comes up with zero physical monitors. (#95)
-                FallbackTimer?.Change(0, Timeout.Infinite);
-            });
 
             Invoke(async () =>
             {
@@ -254,141 +206,6 @@ namespace ParsecDisplay
             }
         }
 
-        /// <summary>
-        /// Restore previously-saved displays from Config (called once at startup).
-        /// </summary>
-        void RestoreDisplays()
-        {
-            if (!Config.RestoreDisplays)
-                return;
-
-            var states = Display.UnpackStates(Config.SavedDisplays);
-            if (states.Count == 0)
-                return;
-
-            RestoreFromStates(states);
-        }
-
-        /// <summary>
-        /// Add N virtual displays and apply the saved per-display modes
-        /// atomically (CDS_NORESET on each, single Commit at the end).
-        /// </summary>
-        void RestoreFromStates(List<Display.State> states)
-        {
-            int wanted = Math.Min(states.Count, Vdd.Core.MAX_DISPLAYS);
-
-            int existing = Vdd.Core.GetDisplays().Count;
-            int toAdd = Math.Max(0, wanted - existing);
-            Log.Info("Restore: wanted={0} existing={1} toAdd={2}", wanted, existing, toAdd);
-
-            for (int i = 0; i < toAdd; i++)
-            {
-                try
-                {
-                    Vdd.Controller.AddDisplay();
-
-                    // Settle: let DisplaySettingsChanged callbacks finish on
-                    // other threads before issuing the next IOCTL.
-                    if (i + 1 < toAdd)
-                        Thread.Sleep(500);
-                }
-                catch (Exception ex)
-                {
-                    Log.Warn("Restore: add {0}/{1} failed: {2}", i + 1, toAdd, ex.Message);
-                    break;
-                }
-            }
-
-            List<Display> displays = null;
-            for (int attempt = 0; attempt < 20; attempt++)
-            {
-                displays = Vdd.Core.GetDisplays();
-                if (displays.Count >= wanted)
-                    break;
-                Thread.Sleep(100);
-            }
-            if (displays == null || displays.Count == 0)
-            {
-                Log.Warn("Restore: no displays visible after add");
-                return;
-            }
-
-            int n = Math.Min(displays.Count, states.Count);
-            bool anyDeferred = false;
-            for (int i = 0; i < n; i++)
-            {
-                if (!displays[i].Active)
-                    continue;
-
-                var s = states[i];
-                if (s.Width <= 0 || s.Height <= 0 || s.Hz <= 0)
-                    continue;
-
-                if (displays[i].ChangeMode(s.Width, s.Height, s.Hz, s.Orientation, defer: true))
-                    anyDeferred = true;
-                else
-                    Log.Warn("Restore: ChangeMode[{0}] {1}x{2}@{3}/{4} failed",
-                        i, s.Width, s.Height, s.Hz, (int)s.Orientation);
-            }
-
-            if (anyDeferred)
-            {
-                Display.CommitChanges();
-                Log.Info("Restore: committed {0} mode change(s)", n);
-            }
-        }
-
-        void ScheduleFallbackEvaluation(object sender, EventArgs e)
-        {
-            FallbackTimer?.Change(FallbackEvaluateDelayMs, Timeout.Infinite);
-        }
-
-        void EvaluateFallback(object state)
-        {
-            if (!Config.FallbackDisplay) return;
-            if (Vdd.Controller.IsSuspended) return;
-
-            var parsecs = Vdd.Core.GetDisplays();
-            int physical = Vdd.Core.CountPhysicalDisplays();
-
-            // Drop a stale tracked index if the user removed the display manually
-            if (FallbackDriverIndex >= 0)
-            {
-                bool stillThere = false;
-                foreach (var d in parsecs)
-                    if (d.DisplayIndex == FallbackDriverIndex) { stillThere = true; break; }
-                if (!stillThere)
-                    FallbackDriverIndex = -1;
-            }
-
-            // Only add a fallback when there is NO display of any kind — physical
-            // or virtual. Otherwise we'd double up when Restore or the user has
-            // already brought a Parsec display online.
-            if (physical == 0 && parsecs.Count == 0)
-            {
-                try
-                {
-                    Vdd.Controller.AddDisplay(out int idx);
-                    FallbackDriverIndex = idx;
-                    Log.Info("Fallback: added (no display present), index={0}", idx);
-                }
-                catch (Exception ex)
-                {
-                    Log.Warn("Fallback: add failed: {0}", ex.Message);
-                }
-            }
-            else if (physical > 0 && FallbackDriverIndex >= 0)
-            {
-                // Physical returned; remove only our auto-added fallback. User-
-                // added / restored displays stay (FallbackDriverIndex == -1
-                // means we didn't add them).
-                Log.Info("Fallback: physical display present, removing fallback index={0}", FallbackDriverIndex);
-                try { Vdd.Controller.RemoveDisplay(FallbackDriverIndex); }
-                catch (Exception ex) { Log.Warn("Fallback: remove failed: {0}", ex.Message); }
-                FallbackDriverIndex = -1;
-            }
-        }
-
         void OnPowerModeChanged(object sender, PowerEvents.PowerBroadcastType type)
         {
             Log.Info("Power event: {0}", type);
@@ -397,10 +214,9 @@ namespace ParsecDisplay
                 case PowerEvents.PowerBroadcastType.PBT_APMSUSPEND:
                 case PowerEvents.PowerBroadcastType.PBT_APMSTANDBY:
                     Interlocked.Exchange(ref ResumeHandled, 0);
-                    // The display we tracked is about to be unplugged; the
-                    // resume path will re-evaluate fallback from scratch.
-                    FallbackDriverIndex = -1;
-                    try { SuspendSnapshot = Vdd.Controller.Suspend(); }
+                    WasStreamingBeforeSuspend = D92Worker.CurrentStatus == D92.StreamWorker.Status.Streaming;
+                    D92Worker.Stop();
+                    try { Vdd.Controller.Suspend(); }
                     catch (Exception ex) { Log.Warn("Suspend threw: {0}", ex.Message); }
                     break;
 
@@ -429,57 +245,34 @@ namespace ParsecDisplay
                     return;
                 }
 
-                var snap = Interlocked.Exchange(ref SuspendSnapshot, null);
-                if (snap == null || snap.Count == 0)
+                if (!WasStreamingBeforeSuspend)
                 {
-                    Log.Info("Resume: no snapshot to restore");
+                    Log.Info("Resume: was not streaming before suspend, nothing to do");
                     return;
                 }
 
-                RestoreFromStates(snap);
-                Log.Info("Resume: done");
+                if (TryEnsureVirtualDisplay(out var display, out var error))
+                    D92Worker.Start(display.DeviceName);
+                else
+                    Log.Warn("Resume: failed to re-establish D92 display: {0}", error);
             }
             catch (Exception ex) { Log.Error("Resume threw: {0}", ex); }
         }
 
+        // MainWindow.xaml.cs and Components/DisplayItem.xaml.cs still call
+        // these two — kept as thin pass-throughs to Vdd.Controller purely so
+        // those files (unreachable now that MainWindow is never shown, see
+        // App.xaml.cs) keep compiling without being rewritten. Not reachable
+        // from the tray menu or any other normal user flow in this build.
         public void AddDisplay(object sender, EventArgs e)
         {
-            if (Interlocked.Exchange(ref InAddDisplay, 1) != 0)
-                return;
-
-            try
-            {
-                Vdd.Controller.AddDisplay();
-            }
-            catch (Exception ex)
-            {
-                HandleVddError(ex);
-            }
-            finally
-            {
-                Interlocked.Exchange(ref InAddDisplay, 0);
-            }
+            try { Vdd.Controller.AddDisplay(); }
+            catch (Exception ex) { HandleVddError(ex); }
         }
 
         public void RemoveDisplay(int index)
         {
-            try
-            {
-                Vdd.Controller.RemoveDisplay(index);
-            }
-            catch (Vdd.ErrorOperationFailed)
-            {
-                MessageBox.Show(Owner, App.GetTranslation("t_msg_failed_to_remove_display"),
-                    Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
-        }
-
-        void RemoveLastDisplay(object sender, EventArgs e)
-        {
-            try
-            {
-                Vdd.Controller.RemoveLastDisplay();
-            }
+            try { Vdd.Controller.RemoveDisplay(index); }
             catch (Vdd.ErrorOperationFailed)
             {
                 MessageBox.Show(Owner, App.GetTranslation("t_msg_failed_to_remove_display"),
@@ -540,10 +333,41 @@ namespace ParsecDisplay
             }
         }
 
-        /// <summary>Finds an already-active Parsec ("PSCCDD0") display, or adds one
-        /// and polls (up to ~3s) for Windows to finish enumerating it, then sets
-        /// it to a normal desktop mode. Displays are identified the same way
-        /// Display.GetAllDisplays already does for its [offline] phantom entries.</summary>
+        /// <summary>
+        /// Writes the D92 panel's exact shape (1920x462 landscape, pre-rotation —
+        /// see StreamWorker.CanvasH x CanvasW) into the VDD driver's custom-mode
+        /// registry preset (HKLM\SOFTWARE\Parsec\vdd), so it shows up as a
+        /// selectable mode at all — Windows can only ChangeMode into a resolution
+        /// the driver actually enumerates, and by default VDD only offers its
+        /// small set of common desktop presets (see docs/PARSEC_VDD_SPECS.md in
+        /// this repo), none of which is anywhere near this panel's shape.
+        /// Requires admin rights (see app.manifest) — called once at startup;
+        /// if it throws (e.g. somehow launched unelevated), streaming will still
+        /// work but ChangeMode below won't be able to reach exactly 1920x462.
+        /// </summary>
+        void EnsureD92CustomMode()
+        {
+            try
+            {
+                Vdd.Utils.SetCustomDisplayModes(new List<Display.Mode>
+                {
+                    new Display.Mode(D92.StreamWorker.CanvasH, D92.StreamWorker.CanvasW, 60),
+                });
+                Log.Info("D92 custom mode preset written: {0}x{1}@60",
+                    D92.StreamWorker.CanvasH, D92.StreamWorker.CanvasW);
+            }
+            catch (Exception ex)
+            {
+                Log.Error("Failed to write D92 custom mode preset (need admin rights): {0}", ex.Message);
+            }
+        }
+
+        /// <summary>Ensures a Parsec ("PSCCDD0") display exists at exactly the D92
+        /// panel's shape. Always removes and re-adds any already-active one
+        /// instead of reusing it as-is — a display created before
+        /// EnsureD92CustomMode() ran (or before this session) won't have picked
+        /// up the 1920x462 preset, and there's no API to refresh a live display's
+        /// mode list short of recreating it.</summary>
         bool TryEnsureVirtualDisplay(out Display display, out string error)
         {
             display = null;
@@ -558,29 +382,40 @@ namespace ParsecDisplay
                 return null;
             }
 
-            display = FindActiveParsecDisplay();
+            var existing = FindActiveParsecDisplay();
+            if (existing != null)
+            {
+                Log.Info("TryEnsureVirtualDisplay: removing existing display index={0} to pick up the current mode preset", existing.DisplayIndex);
+                try { Vdd.Controller.RemoveDisplay(existing.DisplayIndex); }
+                catch (Exception ex) { Log.Warn("Remove existing display failed: {0}", ex.Message); }
+                Thread.Sleep(300); // let the removal settle before re-adding
+            }
+
+            Vdd.Controller.AddDisplay(); // throws Vdd.Error* on failure — let the caller handle it
+
+            for (int i = 0; i < 30 && display == null; i++)
+            {
+                Thread.Sleep(100);
+                display = FindActiveParsecDisplay();
+            }
 
             if (display == null)
             {
-                Vdd.Controller.AddDisplay(); // throws Vdd.Error* on failure — let the caller handle it
-
-                for (int i = 0; i < 30 && display == null; i++)
-                {
-                    Thread.Sleep(100);
-                    display = FindActiveParsecDisplay();
-                }
-
-                if (display == null)
-                {
-                    error = "Added a virtual display but Windows hasn't reported it active yet. Try again in a moment.";
-                    return false;
-                }
+                error = "Added a virtual display but Windows hasn't reported it active yet. Try again in a moment.";
+                return false;
             }
 
-            // Best-effort: give it a normal, desktop-usable resolution. Failure
-            // here isn't fatal — StreamWorker reads whatever mode is current.
-            try { display.ChangeMode(1920, 1080, 60, Display.Orientation.Landscape); }
-            catch (Exception ex) { Log.Warn("ChangeMode(1920x1080) failed: {0}", ex.Message); }
+            bool changed = false;
+            try { changed = display.ChangeMode(D92.StreamWorker.CanvasH, D92.StreamWorker.CanvasW, 60, Display.Orientation.Landscape); }
+            catch (Exception ex) { Log.Warn("ChangeMode({0}x{1}) failed: {2}", D92.StreamWorker.CanvasH, D92.StreamWorker.CanvasW, ex.Message); }
+
+            if (!changed)
+            {
+                error = $"Couldn't set the virtual display to {D92.StreamWorker.CanvasH}x{D92.StreamWorker.CanvasW}. " +
+                        "Make sure ParsecDisplay is running as Administrator (needed to write the custom-mode " +
+                        "registry preset) and try again.";
+                return false;
+            }
 
             return true;
         }
@@ -670,63 +505,17 @@ namespace ParsecDisplay
         {
             if (sender == MI_RunOnStartup)
                 Config.RunOnStartup = MI_RunOnStartup.Checked;
-            else if (sender == MI_RestoreDisplays)
-            {
-                Config.RestoreDisplays = MI_RestoreDisplays.Checked;
-                if (MI_RestoreDisplays.Checked)
-                {
-                    // Enabling → snapshot the current state right away so a quick
-                    // restart restores what the user has on screen.
-                    SaveDisplayState(null, EventArgs.Empty);
-                }
-                else
-                {
-                    Config.SavedDisplays = string.Empty;
-                }
-            }
-            else if (sender == MI_FallbackDisplay)
-            {
-                Config.FallbackDisplay = MI_FallbackDisplay.Checked;
-                if (MI_FallbackDisplay.Checked)
-                {
-                    // Evaluate now in case the host is currently headless
-                    FallbackTimer?.Change(0, Timeout.Infinite);
-                }
-                else if (FallbackDriverIndex >= 0)
-                {
-                    // Disabling — drop our auto-added display, leave user displays alone
-                    try { Vdd.Controller.RemoveDisplay(FallbackDriverIndex); }
-                    catch { }
-                    FallbackDriverIndex = -1;
-                }
-            }
             else if (sender == MI_KeepScreenOn)
                 Config.KeepScreenOn = MI_KeepScreenOn.Checked;
         }
 
-        void SaveDisplayState(object sender, EventArgs e)
-        {
-            // Skip while suspended — displays are intentionally unplugged.
-            if (Vdd.Controller.IsSuspended)
-                return;
-
-            if (!Config.RestoreDisplays)
-                return;
-
-            var displays = Vdd.Core.GetDisplays();
-            var states = new List<Display.State>(displays.Count);
-            foreach (var d in displays)
-            {
-                if (d.Active && d.CurrentMode != null)
-                    states.Add(d.Snapshot());
-            }
-            Config.SavedDisplays = Display.PackStates(states);
-        }
-
+        // MainWindow (the generic display-management dashboard) is never
+        // shown in this build — see App.xaml.cs — so there's nothing for
+        // double-click / the tray "app name" item to bring to front. Kept as
+        // a no-op rather than removed since Program.cs's single-instance
+        // signal handler still calls Tray.Instance.ShowApp.
         public void ShowApp()
         {
-            MainWindow.Instance?.Dispatcher
-                .Invoke(MainWindow.Instance.ShowMe);
         }
 
         public void UpdateContent()
@@ -769,30 +558,13 @@ namespace ParsecDisplay
             D92Worker?.Stop();
 
             var displays = Vdd.Core.GetDisplays();
-            Log.Info("Exit requested ({0} displays, restore={1})", displays.Count, Config.RestoreDisplays);
-            // Skip the "remove all displays?" prompt when restore is enabled —
-            // the next launch will bring them right back.
-            if (displays.Count > 0 && !Config.RestoreDisplays)
-            {
-                if (MessageBox.Show(Owner, App.GetTranslation("t_msg_prompt_leave_all"),
-                    Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
-                {
-                    Log.Info("Exit cancelled by user");
-                    return;
-                }
-            }
+            Log.Info("Exit requested ({0} displays)", displays.Count);
 
-            SystemEvents.SessionEnding -= SaveDisplayState;
-            SystemEvents.SessionSwitch -= SaveDisplayState;
-            SystemEvents.DisplaySettingsChanged -= SaveDisplayState;
-            SystemEvents.DisplaySettingsChanged -= ScheduleFallbackEvaluation;
             PowerEvents.PowerModeChanged -= OnPowerModeChanged;
-            FallbackTimer?.Dispose();
 
-            // Snapshot one last time so next launch's restore matches the
-            // displays the user is exiting with.
-            SaveDisplayState(null, EventArgs.Empty);
-
+            // This build owns exactly one D92-shaped virtual display end to
+            // end (created on Start, meant to disappear on Exit) — no restore
+            // config, no confirmation prompt, just clean up.
             // Best-effort explicit removal in reverse order (preserves Windows 10
             // Connectivity registry config). Per-display failures are swallowed —
             // closing the device handle in Controller.Stop triggers the driver's

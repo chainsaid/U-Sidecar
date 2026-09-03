@@ -15,34 +15,6 @@ namespace ParsecDisplay
             set => SetString(nameof(Language), value);
         }
 
-        /// <summary>
-        /// Whether to restore previously-added virtual displays at startup and
-        /// after sleep/resume. The actual saved state lives in
-        /// <see cref="SavedDisplays"/>; this is just the on/off switch.
-        /// </summary>
-        public static bool RestoreDisplays
-        {
-            get => GetInt(nameof(RestoreDisplays), 1) != 0;
-            set => SetInt(nameof(RestoreDisplays), value ? 1 : 0);
-        }
-
-        /// <summary>
-        /// Packed snapshot of the last-known displays state. Format is a
-        /// comma-separated list of WxH@Hz/O entries (see Display.State.Pack).
-        /// Empty string means no saved state.
-        /// </summary>
-        public static string SavedDisplays
-        {
-            get => GetString(nameof(SavedDisplays), string.Empty);
-            set => SetString(nameof(SavedDisplays), value ?? string.Empty);
-        }
-
-        public static bool FallbackDisplay
-        {
-            get => GetInt(nameof(FallbackDisplay)) != 0;
-            set => SetInt(nameof(FallbackDisplay), value ? 1 : 0);
-        }
-
         public static bool KeepScreenOn
         {
             get
