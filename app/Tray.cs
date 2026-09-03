@@ -40,7 +40,7 @@ namespace ParsecDisplay
 
         // D92 panel streaming (see D92/StreamWorker.cs). Not localized (t_*)
         // yet — Text is set directly in code, see UpdateD92MenuText.
-        D92.StreamWorker D92Worker;
+        Streaming.StreamWorker D92Worker;
         ToolStripMenuItem MI_D92;
         int InD92Toggle;
 
@@ -71,9 +71,9 @@ namespace ParsecDisplay
             Instance = this;
             Vdd.Controller.Start();
 
-            EnsureD92CustomMode();
+            EnsureCustomDisplayModes();
 
-            D92Worker = new D92.StreamWorker();
+            D92Worker = new Streaming.StreamWorker();
             D92Worker.StatusChanged += OnD92StatusChanged;
 
             GuiThread = new Thread(App.Main);
@@ -134,7 +134,7 @@ namespace ParsecDisplay
             AutoStreamPollTimer = new System.Windows.Forms.Timer { Interval = 3000 };
             AutoStreamPollTimer.Tick += (s, e) =>
             {
-                if (!D92.D92Device.IsDeviceEnumerated())
+                if (Devices.SidecarDeviceRegistry.FindPresent() == null)
                     ManuallyStoppedD92 = false;
                 else
                     TryAutoStartStreaming();
@@ -175,10 +175,11 @@ namespace ParsecDisplay
         {
             if (!Config.AutoStartStreaming || ManuallyStoppedD92)
                 return;
-            if (D92Worker.CurrentStatus == D92.StreamWorker.Status.Streaming
-                || D92Worker.CurrentStatus == D92.StreamWorker.Status.Recovering)
+            if (D92Worker.CurrentStatus == Streaming.StreamWorker.Status.Streaming
+                || D92Worker.CurrentStatus == Streaming.StreamWorker.Status.Recovering)
                 return;
-            if (!D92.D92Device.IsDeviceEnumerated())
+            var descriptor = Devices.SidecarDeviceRegistry.FindPresent();
+            if (descriptor == null)
                 return;
 
             if (Interlocked.Exchange(ref InD92Toggle, 1) != 0)
@@ -192,8 +193,8 @@ namespace ParsecDisplay
                     return;
                 }
 
-                if (!D92Worker.Start(display.DeviceName))
-                    Log.Warn("TryAutoStartStreaming: D92 not found (unplugged, or held by another app)");
+                if (!D92Worker.Start(descriptor, display.DeviceName))
+                    Log.Warn("TryAutoStartStreaming: {0} not found (unplugged, or held by another app)", descriptor.Name);
             }
             catch (Exception ex)
             {
@@ -293,8 +294,8 @@ namespace ParsecDisplay
                 case PowerEvents.PowerBroadcastType.PBT_APMSUSPEND:
                 case PowerEvents.PowerBroadcastType.PBT_APMSTANDBY:
                     Interlocked.Exchange(ref ResumeHandled, 0);
-                    WasStreamingBeforeSuspend = D92Worker.CurrentStatus == D92.StreamWorker.Status.Streaming
-                        || D92Worker.CurrentStatus == D92.StreamWorker.Status.Recovering;
+                    WasStreamingBeforeSuspend = D92Worker.CurrentStatus == Streaming.StreamWorker.Status.Streaming
+                        || D92Worker.CurrentStatus == Streaming.StreamWorker.Status.Recovering;
                     D92Worker.Stop();
                     try { Vdd.Controller.Suspend(); }
                     catch (Exception ex) { Log.Warn("Suspend threw: {0}", ex.Message); }
@@ -331,10 +332,19 @@ namespace ParsecDisplay
                     return;
                 }
 
-                if (TryEnsureVirtualDisplay(out var display, out var error))
-                    D92Worker.Start(display.DeviceName);
+                var resumeDescriptor = Devices.SidecarDeviceRegistry.FindPresent();
+                if (resumeDescriptor == null)
+                {
+                    Log.Warn("Resume: no supported device present, not restarting streaming");
+                }
+                else if (TryEnsureVirtualDisplay(out var display, out var error))
+                {
+                    D92Worker.Start(resumeDescriptor, display.DeviceName);
+                }
                 else
-                    Log.Warn("Resume: failed to re-establish D92 display: {0}", error);
+                {
+                    Log.Warn("Resume: failed to re-establish virtual display: {0}", error);
+                }
             }
             catch (Exception ex) { Log.Error("Resume threw: {0}", ex); }
         }
@@ -375,8 +385,8 @@ namespace ParsecDisplay
 
             try
             {
-                if (D92Worker.CurrentStatus == D92.StreamWorker.Status.Streaming
-                    || D92Worker.CurrentStatus == D92.StreamWorker.Status.Recovering)
+                if (D92Worker.CurrentStatus == Streaming.StreamWorker.Status.Streaming
+                    || D92Worker.CurrentStatus == Streaming.StreamWorker.Status.Recovering)
                 {
                     D92Worker.Stop();
                     ManuallyStoppedD92 = true; // don't let AutoStartStreaming immediately undo this
@@ -385,13 +395,21 @@ namespace ParsecDisplay
 
                 ManuallyStoppedD92 = false;
 
+                var descriptor = Devices.SidecarDeviceRegistry.FindPresent();
+                if (descriptor == null)
+                {
+                    MessageBox.Show(Owner, App.GetTranslation("t_msg_d92_not_found"),
+                        Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
                 if (!TryEnsureVirtualDisplay(out var display, out var error))
                 {
                     MessageBox.Show(Owner, error, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
 
-                if (!D92Worker.Start(display.DeviceName))
+                if (!D92Worker.Start(descriptor, display.DeviceName))
                 {
                     MessageBox.Show(Owner, App.GetTranslation("t_msg_d92_not_found"),
                         Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -417,75 +435,104 @@ namespace ParsecDisplay
         }
 
         /// <summary>
-        /// Writes the D92 panel's exact shape (1920x462 landscape, pre-rotation —
-        /// see StreamWorker.CanvasH x CanvasW) into the VDD driver's custom-mode
-        /// registry preset (HKLM\SOFTWARE\Parsec\vdd), so it shows up as a
-        /// selectable mode at all — Windows can only ChangeMode into a resolution
-        /// the driver actually enumerates, and by default VDD only offers its
-        /// small set of common desktop presets (see docs/PARSEC_VDD_SPECS.md in
-        /// this repo), none of which is anywhere near this panel's shape.
-        /// Requires admin rights (see app.manifest) — called once at startup;
-        /// if it throws (e.g. somehow launched unelevated), streaming will still
-        /// work but ChangeMode below won't be able to reach exactly 1920x462.
+        /// Writes every known device's exact shape (pre-rotation capture
+        /// canvas, e.g. 1920x462 for the D92 -- see
+        /// Devices.SidecarDeviceRegistry.Known) into the VDD driver's
+        /// custom-mode registry preset (HKLM\SOFTWARE\Parsec\vdd), so it
+        /// shows up as a selectable mode at all — Windows can only ChangeMode
+        /// into a resolution the driver actually enumerates, and by default
+        /// VDD only offers its small set of common desktop presets (see
+        /// docs/PARSEC_VDD_SPECS.md in this repo), none of which is anywhere
+        /// near a sidecar panel's shape. Requires admin rights (see
+        /// app.manifest) — called once at startup; if it throws (e.g.
+        /// somehow launched unelevated), streaming will still work but
+        /// ChangeMode below won't be able to reach the exact target shape.
+        ///
+        /// Registers every known device's shape regardless of whether it's
+        /// currently plugged in, so the mode is already available the moment
+        /// any of them shows up -- only one physical device is ever actually
+        /// streaming at a time, but there's no reason to wait for it to be
+        /// plugged in before reserving its slot.
         ///
         /// HKLM\SOFTWARE\Parsec\vdd is NOT this app's own key — it's the VDD
         /// driver's single system-wide custom-mode table (5 slots total, hard
         /// limit baked into the driver, see docs/PARSEC_VDD_RE.md §8), shared
         /// by anything on the machine using this same driver, including the
         /// real Parsec client if it's installed. Overwriting all 5 slots with
-        /// just our one entry (the old behavior here) would silently wipe out
+        /// just our entries (the old behavior here) would silently wipe out
         /// whatever custom resolutions that other software had configured.
-        /// So this reads what's already there first and only adds our entry
-        /// if it's missing, instead of replacing the table outright.
+        /// So this reads what's already there first and only adds entries
+        /// that are missing, instead of replacing the table outright.
         /// </summary>
-        void EnsureD92CustomMode()
+        void EnsureCustomDisplayModes()
         {
             try
             {
-                var target = new Display.Mode(D92.StreamWorker.CanvasH, D92.StreamWorker.CanvasW, 60);
                 var existing = Vdd.Utils.GetCustomDisplayModes();
-
-                if (existing.Any(m => m.Width == target.Width && m.Height == target.Height && m.Hz == target.Hz))
-                {
-                    Log.Info("D92 custom mode preset already present: {0}x{1}@{2}",
-                        target.Width, target.Height, target.Hz);
-                    return;
-                }
-
                 var merged = new List<Display.Mode>(existing);
-                if (merged.Count >= 5)
+
+                foreach (var descriptor in Devices.SidecarDeviceRegistry.Known)
                 {
-                    // All 5 slots already taken by someone else's presets and
-                    // ours isn't among them. There's no room to add without
-                    // dropping one of theirs -- drop the oldest (slot 0)
-                    // rather than silently failing to register ours, since
-                    // D92 streaming being locked to the wrong resolution is
-                    // the whole point of this function.
-                    Log.Warn("D92 custom mode preset: all 5 VDD slots taken by other entries, evicting the oldest to make room");
-                    merged.RemoveAt(0);
+                    var target = new Display.Mode(descriptor.CaptureWidth, descriptor.CaptureHeight, 60);
+
+                    if (merged.Any(m => m.Width == target.Width && m.Height == target.Height && m.Hz == target.Hz))
+                    {
+                        Log.Info("Custom mode preset already present for {0}: {1}x{2}@{3}",
+                            descriptor.Name, target.Width, target.Height, target.Hz);
+                        continue;
+                    }
+
+                    if (merged.Count >= 5)
+                    {
+                        // All 5 slots already taken and this device's shape isn't
+                        // among them. There's no room to add without dropping one
+                        // of theirs -- drop the oldest (slot 0) rather than
+                        // silently failing to register this one, since streaming
+                        // being locked to the wrong resolution is the whole point
+                        // of this function.
+                        Log.Warn("Custom mode preset: all 5 VDD slots taken, evicting the oldest to fit {0}", descriptor.Name);
+                        merged.RemoveAt(0);
+                    }
+                    merged.Add(target);
+                    Log.Info("Custom mode preset queued for {0}: {1}x{2}@{3}",
+                        descriptor.Name, target.Width, target.Height, target.Hz);
                 }
-                merged.Add(target);
+
+                if (merged.Count == existing.Count)
+                    return; // nothing new to write
 
                 Vdd.Utils.SetCustomDisplayModes(merged);
-                Log.Info("D92 custom mode preset written: {0}x{1}@{2} (kept {3} pre-existing entries)",
-                    target.Width, target.Height, target.Hz, existing.Count);
+                Log.Info("Custom mode presets written ({0} pre-existing entries kept)", existing.Count);
             }
             catch (Exception ex)
             {
-                Log.Error("Failed to write D92 custom mode preset (need admin rights): {0}", ex.Message);
+                Log.Error("Failed to write custom mode presets (need admin rights): {0}", ex.Message);
             }
         }
 
-        /// <summary>Ensures a Parsec ("PSCCDD0") display exists at exactly the D92
-        /// panel's shape. Always removes and re-adds any already-active one
-        /// instead of reusing it as-is — a display created before
-        /// EnsureD92CustomMode() ran (or before this session) won't have picked
-        /// up the 1920x462 preset, and there's no API to refresh a live display's
-        /// mode list short of recreating it.</summary>
+        /// <summary>Ensures a Parsec ("PSCCDD0") display exists at exactly
+        /// the currently-present device's shape (falling back to the first
+        /// known device model if none is plugged in yet -- see
+        /// Devices.SidecarDeviceRegistry). Always removes and re-adds any
+        /// already-active one instead of reusing it as-is — a display
+        /// created before EnsureCustomDisplayModes() ran (or before this
+        /// session) won't have picked up the custom-mode preset, and there's
+        /// no API to refresh a live display's mode list short of recreating
+        /// it.</summary>
         bool TryEnsureVirtualDisplay(out Display display, out string error)
         {
             display = null;
             error = null;
+
+            var descriptor = Devices.SidecarDeviceRegistry.FindPresent()
+                ?? Devices.SidecarDeviceRegistry.Known.FirstOrDefault();
+            if (descriptor == null)
+            {
+                error = "No known sidecar-screen device models are registered.";
+                return false;
+            }
+            int targetW = descriptor.CaptureWidth;
+            int targetH = descriptor.CaptureHeight;
 
             Display FindActiveParsecDisplay()
             {
@@ -498,15 +545,16 @@ namespace ParsecDisplay
 
             var existing = FindActiveParsecDisplay();
 
-            // Reuse it as-is if it's already at the D92 shape — no need to
-            // tear down and rebuild a perfectly good display on every single
-            // Start(). Only remove+recreate when it's actually wrong (e.g. it
-            // was created before EnsureD92CustomMode() ever ran, back when
-            // the registry preset didn't exist yet).
+            // Reuse it as-is if it's already at the target shape — no need
+            // to tear down and rebuild a perfectly good display on every
+            // single Start(). Only remove+recreate when it's actually wrong
+            // (e.g. it was created before EnsureCustomDisplayModes() ever
+            // ran, back when the registry preset didn't exist yet, or it's
+            // sized for a different device model than the one present now).
             if (existing != null
                 && existing.CurrentMode != null
-                && existing.CurrentMode.Width == D92.StreamWorker.CanvasH
-                && existing.CurrentMode.Height == D92.StreamWorker.CanvasW)
+                && existing.CurrentMode.Width == targetW
+                && existing.CurrentMode.Height == targetH)
             {
                 display = existing;
                 return true;
@@ -516,7 +564,7 @@ namespace ParsecDisplay
             {
                 Log.Info("TryEnsureVirtualDisplay: existing display index={0} is {1}x{2}, not {3}x{4} — recreating",
                     existing.DisplayIndex, existing.CurrentMode?.Width, existing.CurrentMode?.Height,
-                    D92.StreamWorker.CanvasH, D92.StreamWorker.CanvasW);
+                    targetW, targetH);
                 try { Vdd.Controller.RemoveDisplay(existing.DisplayIndex); }
                 catch (Exception ex) { Log.Warn("Remove existing display failed: {0}", ex.Message); }
                 Thread.Sleep(300); // let the removal settle before re-adding
@@ -537,20 +585,20 @@ namespace ParsecDisplay
             }
 
             bool changed = false;
-            try { changed = display.ChangeMode(D92.StreamWorker.CanvasH, D92.StreamWorker.CanvasW, 60, Display.Orientation.Landscape); }
-            catch (Exception ex) { Log.Warn("ChangeMode({0}x{1}) failed: {2}", D92.StreamWorker.CanvasH, D92.StreamWorker.CanvasW, ex.Message); }
+            try { changed = display.ChangeMode(targetW, targetH, 60, Display.Orientation.Landscape); }
+            catch (Exception ex) { Log.Warn("ChangeMode({0}x{1}) failed: {2}", targetW, targetH, ex.Message); }
 
             if (!changed)
             {
                 error = App.GetTranslation("t_msg_display_mode_failed",
-                    D92.StreamWorker.CanvasH, D92.StreamWorker.CanvasW, Program.AppName);
+                    targetW, targetH, Program.AppName);
                 return false;
             }
 
             return true;
         }
 
-        void OnD92StatusChanged(D92.StreamWorker.Status status, string detail)
+        void OnD92StatusChanged(Streaming.StreamWorker.Status status, string detail)
         {
             Invoke(() =>
             {
@@ -558,19 +606,19 @@ namespace ParsecDisplay
 
                 switch (status)
                 {
-                    case D92.StreamWorker.Status.Recovering:
+                    case Streaming.StreamWorker.Status.Recovering:
                         TrayIcon.ShowBalloonTip(3000, Program.AppName,
                             App.GetTranslation("t_msg_d92_recovering", detail),
                             ToolTipIcon.Info);
                         break;
 
-                    case D92.StreamWorker.Status.Streaming when detail == "recovered via soft replug":
+                    case Streaming.StreamWorker.Status.Streaming when detail == "recovered via soft replug":
                         TrayIcon.ShowBalloonTip(3000, Program.AppName,
                             App.GetTranslation("t_msg_d92_recovered"), ToolTipIcon.Info);
                         break;
 
-                    case D92.StreamWorker.Status.Disconnected:
-                    case D92.StreamWorker.Status.CaptureSourceGone:
+                    case Streaming.StreamWorker.Status.Disconnected:
+                    case Streaming.StreamWorker.Status.CaptureSourceGone:
                         // No physical replug needed here: the handle is just
                         // closed (StreamWorker.Stop() already ran internally
                         // after recovery gave up), same as after a normal
@@ -597,10 +645,10 @@ namespace ParsecDisplay
 
             switch (D92Worker.CurrentStatus)
             {
-                case D92.StreamWorker.Status.Streaming:
+                case Streaming.StreamWorker.Status.Streaming:
                     MI_D92.Text = App.GetTranslation("t_d92_stop_streaming");
                     break;
-                case D92.StreamWorker.Status.Recovering:
+                case Streaming.StreamWorker.Status.Recovering:
                     MI_D92.Text = App.GetTranslation("t_d92_recovering");
                     break;
                 default:
@@ -616,10 +664,10 @@ namespace ParsecDisplay
             var status = Vdd.Core.QueryStatus(out var version);
             var caption = $"{Program.AppName} v{Program.AppVersion}";
 
-            // D92.D92Device.IsDeviceEnumerated() only walks SetupDi (no
+            // SidecarDeviceRegistry.FindPresent() only walks SetupDi (no
             // CreateFileW) -- safe to call here even while StreamWorker
             // already holds the one handle it's allowed to hold.
-            var usbPresent = D92.D92Device.IsDeviceEnumerated();
+            var usbPresent = Devices.SidecarDeviceRegistry.FindPresent() != null;
 
             // CurrentStatus is whatever StreamWorker last landed on, not a
             // live re-check -- if streaming was never (re)started since the
@@ -629,8 +677,8 @@ namespace ParsecDisplay
             // unintuitive side by side with "USB: connected" -- spell out
             // why instead of leaving it looking contradictory.
             var streamingLine = D92Worker.CurrentStatus.ToString();
-            if (usbPresent && (D92Worker.CurrentStatus == D92.StreamWorker.Status.DeviceNotFound
-                             || D92Worker.CurrentStatus == D92.StreamWorker.Status.Disconnected))
+            if (usbPresent && (D92Worker.CurrentStatus == Streaming.StreamWorker.Status.DeviceNotFound
+                             || D92Worker.CurrentStatus == Streaming.StreamWorker.Status.Disconnected))
             {
                 streamingLine += App.GetTranslation("t_msg_streaming_status_stale");
             }

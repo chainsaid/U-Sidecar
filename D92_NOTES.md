@@ -243,3 +243,53 @@ no longer the primary recovery strategy.
 Python reference driver in the parent repo) — next step is to actually
 trigger a black screen through this app (e.g. put the laptop to sleep and
 wake it while streaming) and confirm the panel comes back on its own.
+
+## Update: refactored for multiple sidecar-screen devices, D92 as one of them
+
+The app was rewritten from "hardcodes the D92" to "drives whatever
+sidecar-screen device is plugged in, via a small device abstraction" —
+requested ahead of any second device actually existing, so the goal was
+just to get the seams in the right place without inventing speculative
+machinery for devices that don't exist yet.
+
+New in `app/Devices/`:
+- `ISidecarDevice` — one open session against a device: `WakeUp()` +
+  `SendFrame(bytes)`.
+- `ISidecarDeviceDescriptor` — describes a device *model*: `Name`,
+  `VendorId`/`ProductId`, `CaptureWidth`/`CaptureHeight` (pre-rotation
+  capture canvas), `RotateDegrees`, `IsPresent()` (SetupDi-only, safe
+  anytime), `Open()`.
+- `SidecarDeviceRegistry.Known` — the array of registered descriptors.
+  D92 is the only entry today (`Devices/D92/D92DeviceDescriptor.cs`); add
+  a new device by writing one descriptor + one `ISidecarDevice`
+  implementation and adding it here, nothing else needs to know it exists.
+- `UsbRecovery` moved out of `Devices/D92/` (it was already generic enough
+  to not need to live there) and its VID/PID are now parameters instead of
+  reading `D92Device.VendorId`/`ProductId` directly.
+
+`D92Device` (`Devices/D92/D92Device.cs`) is otherwise unchanged --
+still the same wire protocol, same operating constraints -- it just also
+implements `ISidecarDevice` now (`WakeUp()`/`SendFrame()` forward to the
+existing `WakeAndSetBrightness()`/`SendJpeg()`).
+
+`StreamWorker` (moved to `app/Streaming/StreamWorker.cs`) no longer knows
+`D92Device` exists: `Start()` takes an `ISidecarDeviceDescriptor` and asks
+it to `Open()`; the capture/letterbox/rotate math reads shape and rotation
+off that descriptor instead of the `CanvasH`/`CanvasW`/`RotateDegrees`
+constants it used to hardcode.
+
+`Tray.cs`: `EnsureD92CustomMode()` (writes the VDD custom-mode registry
+preset) became `EnsureCustomDisplayModes()` and now loops
+`SidecarDeviceRegistry.Known`, registering every known device's shape
+regardless of which one is actually plugged in — so the mode is already
+available the instant any of them shows up. Everywhere else that needs "the
+device that's here right now" calls `SidecarDeviceRegistry.FindPresent()`.
+
+Deliberately left alone: the tray menu's "D92 Streaming" toggle text and
+its status/notification strings. Those name the *feature* (streaming to
+whichever D92-shaped panel is plugged in), not the app's own brand or an
+implementation detail — accurate regardless of how many device models this
+app ends up supporting, so there was no reason to touch them.
+
+Compiled clean, user confirmed real D92 hardware still streams normally
+after the refactor.

@@ -2,7 +2,7 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace ParsecDisplay.D92
+namespace ParsecDisplay.Devices.D92
 {
     /// <summary>
     /// C# port of the StreamDock D92 protocol client (see the Python reference
@@ -34,7 +34,7 @@ namespace ParsecDisplay.D92
     ///   2. Never let the OUT endpoint go idle for long while a session is
     ///      open. The caller must keep pushing frames continuously.
     /// </summary>
-    public sealed class D92Device : IDisposable
+    public sealed class D92Device : IDisposable, ISidecarDevice
     {
         public const int VendorId = 0x5548;
         public const int ProductId = 0x1011;
@@ -314,6 +314,19 @@ namespace ParsecDisplay.D92
             System.Threading.Thread.Sleep(delayMs);
             SetBrightness(brightness);
         }
+
+        /// <summary>ISidecarDevice.WakeUp -- forwards to WakeAndSetBrightness
+        /// with its defaults. Kept as a separate named method (rather than
+        /// folding this into the interface itself) since WakeAndSetBrightness's
+        /// tunable brightness/delay params are D92-specific, not something
+        /// the generic interface should expose.</summary>
+        void ISidecarDevice.WakeUp() => WakeAndSetBrightness();
+
+        /// <summary>ISidecarDevice.SendFrame -- SendJpeg keeps its own name
+        /// too since it's D92-specific (assumes JPEG-over-HID), called
+        /// directly by streamdock.py-equivalent callers that already know
+        /// they're talking to a D92.</summary>
+        int ISidecarDevice.SendFrame(byte[] frameBytes) => SendJpeg(frameBytes);
 
         public void Dispose()
         {

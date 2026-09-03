@@ -3,10 +3,12 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 
-namespace ParsecDisplay.D92
+namespace ParsecDisplay.Devices
 {
     /// <summary>
-    /// Software equivalent of a physical unplug/replug for the D92 device,
+    /// Software equivalent of a physical unplug/replug for a USB HID
+    /// sidecar-screen device (originally written for the D92, parametrized
+    /// by VID/PID so any ISidecarDeviceDescriptor can reuse it),
     /// via Windows' device-manager "Disable device" then "Enable device"
     /// (SetupDiCallClassInstaller / DIF_PROPERTYCHANGE) — the same operation
     /// as right-clicking the device in Device Manager and toggling it off
@@ -29,8 +31,8 @@ namespace ParsecDisplay.D92
     /// a write failure" that's banned elsewhere in this codebase — reopening
     /// a plain HID handle with no underlying reset just gives you a handle
     /// that writes into a still-stuck device. This forces an actual
-    /// enumeration-level reset first; only reopen the HID handle (via
-    /// D92Device.Open()) after this returns true and the device has
+    /// enumeration-level reset first; only reopen the handle (via the
+    /// descriptor's Open()) after this returns true and the device has
     /// re-enumerated.
     /// </summary>
     static class UsbRecovery
@@ -51,15 +53,15 @@ namespace ParsecDisplay.D92
         /// power to the port, so it can't fix whatever needs a real power-on
         /// reset. Use this method, not TrySoftReplug directly, from now on.
         /// </summary>
-        public static bool TryFullRecover()
+        public static bool TryFullRecover(int vendorId, int productId)
         {
-            if (TryPowerCyclePort(out var reason))
+            if (TryPowerCyclePort(vendorId, productId, out var reason))
             {
                 Log.Info("UsbRecovery: power cycle succeeded");
                 return true;
             }
             Log.Warn("UsbRecovery: power cycle unavailable/failed ({0}), falling back to PnP disable/enable", reason);
-            return TrySoftReplug();
+            return TrySoftReplug(vendorId, productId);
         }
 
         /// <summary>
@@ -71,7 +73,7 @@ namespace ParsecDisplay.D92
         /// supported: this IOCTL is legacy and some hub drivers (particularly
         /// some USB 3.0 host controller / root hub stacks) reject it.
         /// </summary>
-        public static bool TryPowerCyclePort(out string reason)
+        public static bool TryPowerCyclePort(int vendorId, int productId, out string reason)
         {
             reason = null;
 
@@ -87,9 +89,9 @@ namespace ParsecDisplay.D92
             uint devInst;
             try
             {
-                if (!FindDeviceInfo(hidInfoSet, out var devInfoData))
+                if (!FindDeviceInfo(hidInfoSet, vendorId, productId, out var devInfoData))
                 {
-                    reason = "D92 not currently enumerated";
+                    reason = "device not currently enumerated";
                     return false;
                 }
                 devInst = devInfoData.DevInst;
@@ -141,7 +143,7 @@ namespace ParsecDisplay.D92
             }
 
             TryGetDeviceId(hubDevInst, out string hubInstanceId);
-            Log.Info("UsbRecovery: D92 is on port {0} of hub {1}", portNumber, hubInstanceId ?? "?");
+            Log.Info("UsbRecovery: device is on port {0} of hub {1}", portNumber, hubInstanceId ?? "?");
 
             if (!TryOpenHubByDevInst(hubDevInst, out string hubPath))
             {
@@ -176,7 +178,7 @@ namespace ParsecDisplay.D92
 
                     Log.Info("UsbRecovery: IOCTL_USB_HUB_CYCLE_PORT succeeded on port {0}", portNumber);
                     // The port needs a moment to actually drop and re-establish
-                    // power/enumeration before D92Device.Open() would see anything.
+                    // power/enumeration before the descriptor's Open() would see anything.
                     Thread.Sleep(1500);
                     return true;
                 }
@@ -280,12 +282,13 @@ namespace ParsecDisplay.D92
             return g;
         }
 
-        /// <summary>Disable then re-enable the D92 device node. Returns false if the
-        /// device isn't currently enumerated at all, or if either step fails
-        /// (commonly: not running elevated). Only restarts the driver stack —
-        /// does NOT cut power to the port. Kept as TryFullRecover's fallback;
-        /// prefer TryFullRecover / TryPowerCyclePort directly.</summary>
-        public static bool TrySoftReplug()
+        /// <summary>Disable then re-enable the given device's node. Returns
+        /// false if the device isn't currently enumerated at all, or if
+        /// either step fails (commonly: not running elevated). Only
+        /// restarts the driver stack — does NOT cut power to the port. Kept
+        /// as TryFullRecover's fallback; prefer TryFullRecover /
+        /// TryPowerCyclePort directly.</summary>
+        public static bool TrySoftReplug(int vendorId, int productId)
         {
             Guid hidGuid;
             Native.HidD_GetHidGuid(out hidGuid);
@@ -302,9 +305,9 @@ namespace ParsecDisplay.D92
 
             try
             {
-                if (!FindDeviceInfo(deviceInfoSet, out var devInfoData))
+                if (!FindDeviceInfo(deviceInfoSet, vendorId, productId, out var devInfoData))
                 {
-                    Log.Warn("UsbRecovery: D92 not currently enumerated, nothing to cycle");
+                    Log.Warn("UsbRecovery: device not currently enumerated, nothing to cycle");
                     return false;
                 }
 
@@ -348,9 +351,9 @@ namespace ParsecDisplay.D92
         }
 
         /// <summary>Walk the HID interface list for a device whose path matches
-        /// D92Device's VID/PID, returning its SP_DEVINFO_DATA (the device node,
+        /// the given VID/PID, returning its SP_DEVINFO_DATA (the device node,
         /// not the interface).</summary>
-        static bool FindDeviceInfo(IntPtr deviceInfoSet, out Native.SP_DEVINFO_DATA devInfoData)
+        static bool FindDeviceInfo(IntPtr deviceInfoSet, int vendorId, int productId, out Native.SP_DEVINFO_DATA devInfoData)
         {
             devInfoData = default;
 
@@ -383,7 +386,7 @@ namespace ParsecDisplay.D92
                         continue;
 
                     string lower = devicePath.ToLowerInvariant();
-                    if (lower.Contains($"vid_{D92Device.VendorId:x4}") && lower.Contains($"pid_{D92Device.ProductId:x4}"))
+                    if (lower.Contains($"vid_{vendorId:x4}") && lower.Contains($"pid_{productId:x4}"))
                     {
                         devInfoData = candidate;
                         return true;

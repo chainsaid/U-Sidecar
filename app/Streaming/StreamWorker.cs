@@ -6,25 +6,30 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
+using ParsecDisplay.Devices;
 
-namespace ParsecDisplay.D92
+namespace ParsecDisplay.Streaming
 {
     /// <summary>
     /// Captures a GDI display device (typically the Parsec virtual display
-    /// created for this purpose) and continuously pushes it to the D92 panel
-    /// as JPEG-over-HID frames.
+    /// created for this purpose) and continuously pushes it to whichever
+    /// ISidecarDeviceDescriptor it's given (D92 is the only one today --
+    /// see SidecarDeviceRegistry) as encoded frames.
     ///
     /// Ported from the Python prototype (scripts/mirror/mirror_vdd.py in the
-    /// parent repo) and from MirrorWindow.cs's capture technique (StretchBlt
-    /// from the desktop DC), but rendering off-screen instead of to a visible
-    /// window, and pushing to D92Device instead of painting a preview.
+    /// parent repo, D92-specific) and from MirrorWindow.cs's capture
+    /// technique (StretchBlt from the desktop DC), but rendering off-screen
+    /// instead of to a visible window, and pushing to an ISidecarDevice
+    /// instead of painting a preview.
     ///
-    /// Operating policy (see D92Device's doc comment and WORK_SUMMARY.md
-    /// §4/§7 in the parent repo): once started, this pushes frames on a fixed
-    /// timer even when content hasn't changed (the device must never see the
-    /// OUT endpoint go idle), and on any write failure it stops and reports
-    /// Disconnected rather than silently reopening the handle — reopening a
-    /// live session is the #1 known cause of an unrecoverable black screen.
+    /// Operating policy (see ISidecarDevice's doc comment and, for the D92
+    /// specifically, WORK_SUMMARY.md §4/§7 in the parent repo): once
+    /// started, this pushes frames on a fixed timer even when content
+    /// hasn't changed (the device must never see its channel go idle), and
+    /// on any write failure it stops and reports Disconnected rather than
+    /// silently reopening the handle — reopening a live session is the #1
+    /// known cause of an unrecoverable black screen on the D92, and there's
+    /// no reason to assume other devices are more forgiving about it.
     /// </summary>
     public sealed class StreamWorker : IDisposable
     {
@@ -32,7 +37,7 @@ namespace ParsecDisplay.D92
         {
             Idle,
             Streaming,
-            DeviceNotFound,     // D92 not enumerated (unplugged, or held by another app)
+            DeviceNotFound,     // not enumerated (unplugged, or held by another app)
             Recovering,         // a write failed; attempting a soft USB replug (see UsbRecovery)
             Disconnected,       // recovery gave up (or is disabled) — needs a physical replug
             CaptureSourceGone,  // the target GDI display disappeared (virtual display removed)
@@ -40,11 +45,6 @@ namespace ParsecDisplay.D92
 
         public class Options
         {
-            /// <summary>Host-side rotation before encoding. 270 confirmed correct
-            /// on real hardware for a 1920x1080-shaped capture; re-check if the
-            /// virtual display's native orientation changes.</summary>
-            public int RotateDegrees = 270;
-
             /// <summary>JPEG quality 0-100 passed to the stock GDI+ encoder.
             /// Bumped from the original 75 after it looked too soft on the
             /// real panel -- 75 was carried over as a bandwidth-conscious
@@ -85,19 +85,11 @@ namespace ParsecDisplay.D92
             public int RecoveryPollTimeoutMs = 15000;
         }
 
-        // Panel canvas, pre-rotation "landscape" shape — see WORK_SUMMARY.md §8.7:
-        // the official app authors content on a 1920x462 canvas and rotates before
-        // push, matching the panel's apparent native orientation. Public so the
-        // caller can lock a virtual display to this exact resolution (see
-        // Tray.TryEnsureVirtualDisplay) — at 1:1 the letterbox-fit below becomes
-        // a no-op instead of scaling.
-        public const int CanvasW = 462;
-        public const int CanvasH = 1920;
-
         readonly Options _opts;
         Thread _thread;
         volatile bool _running;
-        D92Device _device;
+        ISidecarDeviceDescriptor _descriptor;
+        ISidecarDevice _device;
         int _lastModeCorrectionTick = int.MinValue;
         const int ModeCorrectionCooldownMs = 3000;
 
@@ -109,37 +101,40 @@ namespace ParsecDisplay.D92
             _opts = opts ?? new Options();
         }
 
-        /// <summary>Start streaming from the given GDI display device (e.g. "\\.\DISPLAY5").
-        /// Returns false immediately if the D92 device can't be opened right now.</summary>
-        public bool Start(string gdiDeviceName)
+        /// <summary>Start streaming from the given GDI display device (e.g.
+        /// "\\.\DISPLAY5") to whatever device the descriptor opens. Returns
+        /// false immediately if that device can't be opened right now.</summary>
+        public bool Start(ISidecarDeviceDescriptor descriptor, string gdiDeviceName)
         {
             if (_running)
                 return true;
 
-            _device = D92Device.Open();
+            _descriptor = descriptor;
+            _device = descriptor.Open();
             if (_device == null)
             {
-                SetStatus(Status.DeviceNotFound, "D92 not found (unplugged, or held by another app)");
+                SetStatus(Status.DeviceNotFound, $"{descriptor.Name} not found (unplugged, or held by another app)");
                 return false;
             }
 
-            // Reopening the HID handle within the same physical USB connection
-            // (suspend/resume, or the user toggling "D92 Streaming" off/on) is
-            // the #1 confirmed cause of a black panel (parent repo's
-            // WORK_SUMMARY.md §4.3). Replaying the official app's connect
-            // sequence -- DIS wake, ~450ms, LIG brightness -- before streaming
-            // is confirmed on real hardware (§8.13 there) to revive a panel
-            // left black by exactly this kind of reopen, with no PnP reset or
-            // physical replug needed. Do this on every Start(), not only after
-            // a detected failure, since the official app does it unconditionally
-            // on every connect too.
+            // Reopening a device handle within the same physical USB
+            // connection (suspend/resume, or the user toggling streaming
+            // off/on) is the #1 confirmed cause of a black panel on the D92
+            // (parent repo's WORK_SUMMARY.md §4.3) -- assume other devices
+            // aren't necessarily more forgiving about it either. Calling
+            // WakeUp() here, unconditionally on every Start() rather than
+            // only after a detected failure, mirrors what the D92's own
+            // official app does on every connect (§8.13 there) and is
+            // confirmed on real hardware to revive a panel left black by
+            // exactly this kind of reopen, with no PnP reset or physical
+            // replug needed.
             try
             {
-                _device.WakeAndSetBrightness();
+                _device.WakeUp();
             }
             catch (Exception ex)
             {
-                Log.Warn("D92 StreamWorker: wake sequence failed on open: {0}", ex.Message);
+                Log.Warn("StreamWorker: wake sequence failed on open: {0}", ex.Message);
                 _device.Dispose();
                 _device = null;
                 SetStatus(Status.DeviceNotFound, $"wake sequence failed: {ex.Message}");
@@ -170,7 +165,7 @@ namespace ParsecDisplay.D92
         void SetStatus(Status s, string detail)
         {
             CurrentStatus = s;
-            Log.Info("D92 StreamWorker: {0} ({1})", s, detail);
+            Log.Info("StreamWorker: {0} ({1})", s, detail);
             StatusChanged?.Invoke(s, detail);
         }
 
@@ -197,7 +192,7 @@ namespace ParsecDisplay.D92
                         }
 
                         var jpeg = EncodeJpeg(frame, _opts.JpegQuality);
-                        _device.SendJpeg(jpeg);
+                        _device.SendFrame(jpeg);
                     }
                 }
                 catch (Exception ex)
@@ -205,9 +200,10 @@ namespace ParsecDisplay.D92
                     // Never just reopen the old handle here — a plain reopen
                     // with no real reset behind it just gives you a handle
                     // into a still-stuck device (see WORK_SUMMARY.md §4.3 in
-                    // the parent repo). Recover() below performs an actual
-                    // Windows-level device reset (UsbRecovery.TrySoftReplug)
-                    // before ever calling D92Device.Open() again.
+                    // the parent repo, re: the D92). Recover() below performs
+                    // an actual Windows-level device reset
+                    // (UsbRecovery.TrySoftReplug) before ever calling the
+                    // descriptor's Open() again.
                     _device?.Dispose();
                     _device = null;
 
@@ -241,8 +237,8 @@ namespace ParsecDisplay.D92
             _device = null;
         }
 
-        /// <summary>Reopen the HID handle and replay the official app's connect
-        /// sequence (D92Device.WakeAndSetBrightness). Confirmed on real
+        /// <summary>Reopen the device (via the same descriptor Start() was
+        /// given) and replay its wake sequence. Confirmed on real D92
         /// hardware (parent repo's WORK_SUMMARY.md §8.13) to revive a panel
         /// left black by a plain reopen -- no PnP disable/enable or USB hub
         /// power-cycle needed, which earlier testing (§8.11, D92_NOTES.md
@@ -256,17 +252,17 @@ namespace ParsecDisplay.D92
             var deadline = Environment.TickCount + _opts.RecoveryPollTimeoutMs;
             while (_running && Environment.TickCount < deadline)
             {
-                _device = D92Device.Open();
+                _device = _descriptor.Open();
                 if (_device != null)
                 {
                     try
                     {
-                        _device.WakeAndSetBrightness();
+                        _device.WakeUp();
                         return true;
                     }
                     catch (Exception ex)
                     {
-                        Log.Warn("D92 StreamWorker: wake sequence failed on reopen: {0}", ex.Message);
+                        Log.Warn("StreamWorker: wake sequence failed on reopen: {0}", ex.Message);
                         _device.Dispose();
                         _device = null;
                     }
@@ -274,24 +270,24 @@ namespace ParsecDisplay.D92
                 Thread.Sleep(300);
             }
 
-            Log.Warn("D92 StreamWorker: plain reopen+wake gave up, falling back to UsbRecovery.TryFullRecover()");
-            if (!UsbRecovery.TryFullRecover())
+            Log.Warn("StreamWorker: plain reopen+wake gave up, falling back to UsbRecovery.TryFullRecover()");
+            if (!UsbRecovery.TryFullRecover(_descriptor.VendorId, _descriptor.ProductId))
                 return false;
 
             deadline = Environment.TickCount + _opts.RecoveryPollTimeoutMs;
             while (_running && Environment.TickCount < deadline)
             {
-                _device = D92Device.Open();
+                _device = _descriptor.Open();
                 if (_device != null)
                 {
                     try
                     {
-                        _device.WakeAndSetBrightness();
+                        _device.WakeUp();
                         return true;
                     }
                     catch (Exception ex)
                     {
-                        Log.Warn("D92 StreamWorker: wake sequence failed after UsbRecovery: {0}", ex.Message);
+                        Log.Warn("StreamWorker: wake sequence failed after UsbRecovery: {0}", ex.Message);
                         _device.Dispose();
                         _device = null;
                     }
@@ -302,9 +298,10 @@ namespace ParsecDisplay.D92
         }
 
         /// <summary>Grab the current frame of gdiDeviceName and letterbox-fit it
-        /// into the panel's pre-rotation canvas shape (CanvasH x CanvasW),
-        /// then rotate. Returns null if the display's mode can't be read
-        /// (display no longer exists).</summary>
+        /// into the device's pre-rotation capture canvas shape
+        /// (_descriptor.CaptureWidth x CaptureHeight), then rotate. Returns
+        /// null if the display's mode can't be read (display no longer
+        /// exists).</summary>
         Bitmap CaptureAndFit(string gdiDeviceName)
         {
             if (!TryGetDisplayBounds(gdiDeviceName, out var bounds))
@@ -312,28 +309,32 @@ namespace ParsecDisplay.D92
 
             EnforceNativeMode(gdiDeviceName, bounds);
 
+            int canvasW = _descriptor.CaptureWidth;
+            int canvasH = _descriptor.CaptureHeight;
+
             using (var raw = CaptureScreenRegion(bounds))
             {
-                var fitted = new Bitmap(CanvasH, CanvasW, PixelFormat.Format24bppRgb);
+                var fitted = new Bitmap(canvasW, canvasH, PixelFormat.Format24bppRgb);
                 using (var g = Graphics.FromImage(fitted))
                 {
                     g.Clear(Color.Black);
                     g.InterpolationMode = InterpolationMode.HighQualityBilinear;
                     g.CompositingQuality = CompositingQuality.HighQuality;
 
-                    float scale = Math.Min((float)CanvasH / raw.Width, (float)CanvasW / raw.Height);
+                    float scale = Math.Min((float)canvasW / raw.Width, (float)canvasH / raw.Height);
                     int w = Math.Max(1, (int)Math.Round(raw.Width * scale));
                     int h = Math.Max(1, (int)Math.Round(raw.Height * scale));
-                    int x = (CanvasH - w) / 2;
-                    int y = (CanvasW - h) / 2;
+                    int x = (canvasW - w) / 2;
+                    int y = (canvasH - h) / 2;
                     g.DrawImage(raw, x, y, w, h);
                 }
 
-                if (_opts.RotateDegrees % 360 == 0)
+                int rotateDegrees = _descriptor.RotateDegrees;
+                if (rotateDegrees % 360 == 0)
                     return fitted;
 
                 RotateFlipType rft;
-                switch (((_opts.RotateDegrees % 360) + 360) % 360)
+                switch (((rotateDegrees % 360) + 360) % 360)
                 {
                     case 90: rft = RotateFlipType.Rotate90FlipNone; break;
                     case 180: rft = RotateFlipType.Rotate180FlipNone; break;
@@ -351,22 +352,25 @@ namespace ParsecDisplay.D92
         /// Settings resolution dropdown for this virtual monitor -- that list
         /// is compiled into the driver itself (docs/PARSEC_VDD_SPECS.md,
         /// docs/PARSEC_VDD_RE.md §8) and there's no documented way to hide or
-        /// remove them from a user-mode caller; EnsureD92CustomMode only adds
-        /// one more entry (the panel's native 1920x462) alongside those ~26,
-        /// it can't replace them. So the dropdown itself can't be trimmed
-        /// down to a single choice.
+        /// remove them from a user-mode caller; Tray's EnsureCustomDisplayModes
+        /// only adds one entry per known device alongside those ~26, it can't
+        /// replace them. So the dropdown itself can't be trimmed down to a
+        /// single choice.
         ///
         /// What we *can* enforce is that streaming never actually runs at
-        /// anything other than the panel's native shape: if someone picks a
-        /// different resolution from that list while D92 streaming is
-        /// active, this snaps it back to CanvasH x CanvasW every time it
-        /// drifts (throttled so it doesn't fight a user actively dragging
-        /// through the dropdown). Checked every captured frame since
-        /// TryGetDisplayBounds is already called for that anyway.
+        /// anything other than the device's native capture shape: if someone
+        /// picks a different resolution from that list while streaming is
+        /// active, this snaps it back to CaptureWidth x CaptureHeight every
+        /// time it drifts (throttled so it doesn't fight a user actively
+        /// dragging through the dropdown). Checked every captured frame
+        /// since TryGetDisplayBounds is already called for that anyway.
         /// </summary>
         void EnforceNativeMode(string gdiDeviceName, Rectangle bounds)
         {
-            if (bounds.Width == CanvasH && bounds.Height == CanvasW)
+            int canvasW = _descriptor.CaptureWidth;
+            int canvasH = _descriptor.CaptureHeight;
+
+            if (bounds.Width == canvasW && bounds.Height == canvasH)
                 return;
 
             int now = Environment.TickCount;
@@ -374,8 +378,8 @@ namespace ParsecDisplay.D92
                 return;
             _lastModeCorrectionTick = now;
 
-            Log.Warn("D92 StreamWorker: virtual display drifted to {0}x{1}, forcing back to {2}x{3}",
-                bounds.Width, bounds.Height, CanvasH, CanvasW);
+            Log.Warn("StreamWorker: virtual display drifted to {0}x{1}, forcing back to {2}x{3}",
+                bounds.Width, bounds.Height, canvasW, canvasH);
             try
             {
                 // Display's constructor is private -- can't build one directly,
@@ -384,14 +388,14 @@ namespace ParsecDisplay.D92
                     .FirstOrDefault(d => string.Equals(d.DeviceName, gdiDeviceName, StringComparison.Ordinal));
                 if (display == null)
                 {
-                    Log.Warn("D92 StreamWorker: couldn't find Display for {0} to correct its mode", gdiDeviceName);
+                    Log.Warn("StreamWorker: couldn't find Display for {0} to correct its mode", gdiDeviceName);
                     return;
                 }
-                display.ChangeMode(CanvasH, CanvasW, 60, Display.Orientation.Landscape);
+                display.ChangeMode(canvasW, canvasH, 60, Display.Orientation.Landscape);
             }
             catch (Exception ex)
             {
-                Log.Warn("D92 StreamWorker: failed to force resolution back: {0}", ex.Message);
+                Log.Warn("StreamWorker: failed to force resolution back: {0}", ex.Message);
             }
         }
 
