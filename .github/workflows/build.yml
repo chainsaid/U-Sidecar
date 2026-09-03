@@ -44,7 +44,7 @@ jobs:
       - name: Target .NET 4.8
         if: ${{ inputs.net480 }}
         run: |
-          (Get-Content app\D92Streaming.csproj) -replace "TargetFramework>net472", "TargetFramework>net480" | Out-File app\D92Streaming.csproj
+          (Get-Content app\USidecar.csproj) -replace "TargetFramework>net472", "TargetFramework>net480" | Out-File app\USidecar.csproj
           (Get-Content app\App.config) -replace "Version=v4.7.2", "Version=v4.8" | Out-File app\App.config
 
       - name: Setup msbuild
@@ -53,8 +53,8 @@ jobs:
       - name: Build app
         run: |
           cd app
-          msbuild D92Streaming.csproj /t:Restore
-          msbuild D92Streaming.csproj /t:Build /p:Configuration=${{ env.BUILD_CONFIG }} /p:Platform=AnyCPU
+          msbuild USidecar.csproj /t:Restore
+          msbuild USidecar.csproj /t:Build /p:Configuration=${{ env.BUILD_CONFIG }} /p:Platform=AnyCPU
 
       - name: Stage build output
         id: prepare-output-step
@@ -69,9 +69,9 @@ jobs:
           $src = "app\bin\${{ env.BUILD_CONFIG }}"
           echo "${{ env.APP_VERSION }}+${{ env.SHORT_SHA }}" | Out-File -Encoding ascii stage\version
           Copy-Item "$src\vdd.cmd" stage\
-          Copy-Item "$src\D92Streaming.exe" stage\
-          Copy-Item "$src\D92Streaming.exe.config" stage\
-          echo "artifact-name=D92Streaming-v${{ env.APP_VERSION }}-${{ env.SHORT_SHA }}" >> $env:GITHUB_OUTPUT
+          Copy-Item "$src\USidecar.exe" stage\
+          Copy-Item "$src\USidecar.exe.config" stage\
+          echo "artifact-name=USidecar-v${{ env.APP_VERSION }}-${{ env.SHORT_SHA }}" >> $env:GITHUB_OUTPUT
 
       - name: Upload build output
         uses: actions/upload-artifact@v4

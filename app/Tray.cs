@@ -53,7 +53,7 @@ namespace ParsecDisplay
         // suppressed, since only the Stop menu click sets this.
         bool ManuallyStoppedD92;
 
-        //  D92 Streaming v{version}
+        //  U-Sidecar v{version}
         //  ______________
         //  D92 Streaming
         //  --------------
