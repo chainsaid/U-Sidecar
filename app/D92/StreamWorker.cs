@@ -55,6 +55,16 @@ namespace ParsecDisplay.D92
             /// noticeably more often at this rate, back off toward 50-67ms
             /// before assuming it's a new bug.</summary>
             public int IntervalMs = 33;
+
+            /// <summary>Draw the cursor ourselves on top of the captured frame.
+            /// Confirmed necessary on real hardware: with this off, the D92
+            /// panel shows no cursor at all -- CAPTUREBLT (see
+            /// CaptureScreenRegion) does NOT bake the cursor into the raw
+            /// BitBlt capture on this machine, so DrawCursor is the only
+            /// source of the on-panel cursor. (An earlier theory that
+            /// disabling this would fix a flicker was wrong -- see the
+            /// CAPTUREBLT removal below for the actual cause, which was a
+            /// flicker of the user's own real cursor, unrelated to this.)</summary>
             public bool DrawCursor = true;
 
             /// <summary>On a write failure, attempt UsbRecovery.TryFullRecover()
@@ -401,8 +411,18 @@ namespace ParsecDisplay.D92
                 var hdcSrc = Native.GetDC(IntPtr.Zero);
                 try
                 {
+                    // Plain SRCCOPY, no CAPTUREBLT. Confirmed on real hardware
+                    // that CAPTUREBLT does NOT actually bake the cursor into
+                    // this capture (DrawCursor below is the only source of
+                    // the on-panel cursor) -- so it bought nothing here, but
+                    // cost something real: BitBlt+CAPTUREBLT from the desktop
+                    // DC at 30fps was making the user's own physical-monitor
+                    // cursor visibly flicker, a known Windows quirk where
+                    // CAPTUREBLT forces the OS to briefly fall back to
+                    // software cursor compositing on every call. Dropping it
+                    // removes that side effect on the real desktop.
                     Native.BitBlt(hdcDest, 0, 0, bounds.Width, bounds.Height,
-                        hdcSrc, bounds.X, bounds.Y, Native.SRCCOPY | Native.CAPTUREBLT);
+                        hdcSrc, bounds.X, bounds.Y, Native.SRCCOPY);
                 }
                 finally
                 {
@@ -484,7 +504,6 @@ namespace ParsecDisplay.D92
         static class Native
         {
             public const uint SRCCOPY = 0x00CC0020;
-            public const uint CAPTUREBLT = 0x40000000;
 
             [StructLayout(LayoutKind.Sequential)]
             public struct DEVMODE
