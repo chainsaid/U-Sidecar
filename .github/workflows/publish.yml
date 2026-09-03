@@ -23,7 +23,7 @@ jobs:
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ secrets.SIGNPATH_ORG_ID }}
-          project-slug: parsec-vdd
+          project-slug: d92-streaming
           signing-policy-slug: release-signing
           artifact-configuration-slug: zipped-exe
           github-artifact-id: "${{ needs.build.outputs.artifact-id }}"
@@ -59,7 +59,7 @@ jobs:
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ secrets.SIGNPATH_ORG_ID }}
-          project-slug: parsec-vdd
+          project-slug: d92-streaming
           signing-policy-slug: release-signing
           artifact-configuration-slug: zipped-exe
           github-artifact-id: "${{steps.artifact-upload-installer-step.outputs.artifact-id}}"
