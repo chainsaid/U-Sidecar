@@ -370,12 +370,30 @@ namespace ParsecDisplay.D92
             if (!bounds.Contains(cursor.screenPosX, cursor.screenPosY))
                 return;
 
+            // GetCursorInfo's screenPosX/Y is the cursor's hotspot (the actual
+            // pointer position), not the top-left of its icon bitmap. Most
+            // cursors (the default arrow included) have their hotspot away
+            // from the icon's center, so drawing at width/2,height/2 (as this
+            // used to) offsets the rendered cursor from the real pointer by
+            // roughly half the icon size. GetIconInfo gives the icon's real
+            // xHotspot/yHotspot to draw from instead.
+            int hotspotX = 0, hotspotY = 0;
+            if (Native.GetIconInfo(cursor.hCursor, out var iconInfo))
+            {
+                hotspotX = iconInfo.xHotspot;
+                hotspotY = iconInfo.yHotspot;
+                // GetIconInfo hands back new bitmap handles the caller owns —
+                // must delete them or every frame leaks two GDI objects.
+                if (iconInfo.hbmMask != IntPtr.Zero) Native.DeleteObject(iconInfo.hbmMask);
+                if (iconInfo.hbmColor != IntPtr.Zero) Native.DeleteObject(iconInfo.hbmColor);
+            }
+
             try
             {
                 using (var icon = Icon.FromHandle(cursor.hCursor))
                 {
-                    g.DrawIcon(icon, cursor.screenPosX - bounds.X - icon.Width / 2,
-                                      cursor.screenPosY - bounds.Y - icon.Height / 2);
+                    g.DrawIcon(icon, cursor.screenPosX - bounds.X - hotspotX,
+                                      cursor.screenPosY - bounds.Y - hotspotY);
                 }
             }
             catch
@@ -460,6 +478,16 @@ namespace ParsecDisplay.D92
                 public int screenPosY;
             }
 
+            [StructLayout(LayoutKind.Sequential)]
+            public struct ICONINFO
+            {
+                public bool fIcon;
+                public int xHotspot;
+                public int yHotspot;
+                public IntPtr hbmMask;
+                public IntPtr hbmColor;
+            }
+
             [DllImport("user32.dll")]
             [return: MarshalAs(UnmanagedType.Bool)]
             public static extern bool EnumDisplaySettings(string deviceName, int modeNum, ref DEVMODE devMode);
@@ -477,6 +505,14 @@ namespace ParsecDisplay.D92
             [DllImport("user32.dll")]
             [return: MarshalAs(UnmanagedType.Bool)]
             public static extern bool GetCursorInfo(ref CURSORINFO pci);
+
+            [DllImport("user32.dll")]
+            [return: MarshalAs(UnmanagedType.Bool)]
+            public static extern bool GetIconInfo(IntPtr hIcon, out ICONINFO piconinfo);
+
+            [DllImport("gdi32.dll")]
+            [return: MarshalAs(UnmanagedType.Bool)]
+            public static extern bool DeleteObject(IntPtr hObject);
         }
     }
 }
