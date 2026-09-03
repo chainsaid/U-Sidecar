@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Windows.Forms;
 using System.Drawing;
 using System.Threading;
@@ -39,7 +40,7 @@ namespace ParsecDisplay
         ToolStripMenuItem MI_D92;
         int InD92Toggle;
 
-        //  ParsecDisplay v{version}
+        //  D92 Streaming v{version}
         //  ______________
         //  D92 Streaming
         //  --------------
@@ -48,7 +49,6 @@ namespace ParsecDisplay
         //  Language       >   {lang_1}
         //                 |   {lang_2}
         //                 |   ...
-        //  Check update
         //  --------------
         //  Exit
 
@@ -97,7 +97,6 @@ namespace ParsecDisplay
                             }
                         },
                         (MI_Language = new ToolStripMenuItem("t_language", translateIcon)),
-                        new ToolStripMenuItem("t_check_for_update", null, CheckUpdate),
                         new ToolStripSeparator(),
                         new ToolStripMenuItem("t_exit", null, Exit),
                     }
@@ -119,12 +118,6 @@ namespace ParsecDisplay
             TrayIcon.Visible = true;
 
             PowerEvents.PowerModeChanged += OnPowerModeChanged;
-
-            Invoke(async () =>
-            {
-                await Task.Delay(1000);
-                CheckUpdate(null, null);
-            });
         }
 
         private void WarnVddStatus(Device.Status status)
@@ -385,17 +378,48 @@ namespace ParsecDisplay
         /// Requires admin rights (see app.manifest) — called once at startup;
         /// if it throws (e.g. somehow launched unelevated), streaming will still
         /// work but ChangeMode below won't be able to reach exactly 1920x462.
+        ///
+        /// HKLM\SOFTWARE\Parsec\vdd is NOT this app's own key — it's the VDD
+        /// driver's single system-wide custom-mode table (5 slots total, hard
+        /// limit baked into the driver, see docs/PARSEC_VDD_RE.md §8), shared
+        /// by anything on the machine using this same driver, including the
+        /// real Parsec client if it's installed. Overwriting all 5 slots with
+        /// just our one entry (the old behavior here) would silently wipe out
+        /// whatever custom resolutions that other software had configured.
+        /// So this reads what's already there first and only adds our entry
+        /// if it's missing, instead of replacing the table outright.
         /// </summary>
         void EnsureD92CustomMode()
         {
             try
             {
-                Vdd.Utils.SetCustomDisplayModes(new List<Display.Mode>
+                var target = new Display.Mode(D92.StreamWorker.CanvasH, D92.StreamWorker.CanvasW, 60);
+                var existing = Vdd.Utils.GetCustomDisplayModes();
+
+                if (existing.Any(m => m.Width == target.Width && m.Height == target.Height && m.Hz == target.Hz))
                 {
-                    new Display.Mode(D92.StreamWorker.CanvasH, D92.StreamWorker.CanvasW, 60),
-                });
-                Log.Info("D92 custom mode preset written: {0}x{1}@60",
-                    D92.StreamWorker.CanvasH, D92.StreamWorker.CanvasW);
+                    Log.Info("D92 custom mode preset already present: {0}x{1}@{2}",
+                        target.Width, target.Height, target.Hz);
+                    return;
+                }
+
+                var merged = new List<Display.Mode>(existing);
+                if (merged.Count >= 5)
+                {
+                    // All 5 slots already taken by someone else's presets and
+                    // ours isn't among them. There's no room to add without
+                    // dropping one of theirs -- drop the oldest (slot 0)
+                    // rather than silently failing to register ours, since
+                    // D92 streaming being locked to the wrong resolution is
+                    // the whole point of this function.
+                    Log.Warn("D92 custom mode preset: all 5 VDD slots taken by other entries, evicting the oldest to make room");
+                    merged.RemoveAt(0);
+                }
+                merged.Add(target);
+
+                Vdd.Utils.SetCustomDisplayModes(merged);
+                Log.Info("D92 custom mode preset written: {0}x{1}@{2} (kept {3} pre-existing entries)",
+                    target.Width, target.Height, target.Hz, existing.Count);
             }
             catch (Exception ex)
             {
@@ -550,40 +574,6 @@ namespace ParsecDisplay
                 $"- Version: {version}\n" +
                 $"- {App.GetTranslation("t_msg_driver_status")}: {status}",
                 caption, MessageBoxButtons.OK, MessageBoxIcon.Information);
-        }
-
-        async void CheckUpdate(object sender, EventArgs e)
-        {
-            ToolStripMenuItem menuItem = null;
-            if (sender is ToolStripMenuItem)
-            {
-                menuItem = (ToolStripMenuItem)sender;
-                menuItem.Enabled = false;
-            }
-
-            var newVersion = await Updater.CheckUpdate()
-                .ConfigureAwait(false);
-
-            if (!string.IsNullOrEmpty(newVersion))
-            {
-                var ret = MessageBox.Show(Owner, App.GetTranslation("t_msg_update_available", newVersion),
-                    Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-
-                if (ret == DialogResult.Yes)
-                {
-                    Helper.OpenLink(Updater.DOWNLOAD_URL);
-                }
-            }
-            else if (sender != null)
-            {
-                MessageBox.Show(Owner, App.GetTranslation("t_msg_up_to_date"),
-                    Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
-            }
-
-            if (menuItem != null)
-            {
-                menuItem.Enabled = true;
-            }
         }
 
         void OptionsCheck(object sender, EventArgs e)

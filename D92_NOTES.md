@@ -26,7 +26,7 @@ before testing.
   otherwise creates one (`Vdd.Controller.AddDisplay()`) and polls up to ~3s
   for Windows to enumerate it, sets it to 1920×1080@60 (best-effort), then
   starts `StreamWorker` against its GDI device name.
-- `app/ParsecDisplay.csproj` — fixed to build under the .NET 8 SDK
+- `app/D92Streaming.csproj` — fixed to build under the .NET 8 SDK
   (`GenerateResourceUsePreserializedResources` + `System.Resources.Extensions`,
   see the earlier commit).
 
@@ -93,7 +93,7 @@ constants, this C# port mirrors that logic):
 ## How to test
 
 1. `dotnet build parsec-vdd.sln` (already verified clean, 0 warnings/errors).
-2. Run `app/bin/ParsecDisplay.exe`, make sure the D92 is plugged in and the
+2. Run `app/bin/D92Streaming.exe`, make sure the D92 is plugged in and the
    official MiraBox software is closed.
 3. Tray icon → **D92 Streaming**. Should show your desktop's virtual-display
    mirror on the panel, correctly oriented, no stretching.

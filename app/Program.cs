@@ -9,7 +9,7 @@ namespace ParsecDisplay
     public static class Program
     {
         public const string AppId = "QpHOX8IBUHBznGtqk9xm1";
-        public const string AppName = nameof(ParsecDisplay);
+        public const string AppName = "D92 Streaming";
         public const string AppVersion = "1.0.2";
         public const string GitHubRepo = "nomi-san/parsec-vdd";
 

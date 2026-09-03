@@ -16,7 +16,7 @@
 
   <PropertyGroup>
     <OutputPath>bin\</OutputPath>
-    <AssemblyName>ParsecDisplay</AssemblyName>
+    <AssemblyName>D92Streaming</AssemblyName>
     <RootNamespace>ParsecDisplay</RootNamespace>
     <StartupObject>ParsecDisplay.Program</StartupObject>
   </PropertyGroup>
@@ -69,15 +69,15 @@
 @echo off
 setlocal
 
-set app_exe=%~dp0ParsecDisplay.exe
-set parent_exe=%~dp0..\ParsecDisplay.exe
+set app_exe=%~dp0D92Streaming.exe
+set parent_exe=%~dp0..\D92Streaming.exe
 
 if exist "%app_exe%" (
     start /b /wait "" "%app_exe%" -cli %*
 ) else if exist "%parent_exe%" (
     start /b /wait "" "%parent_exe%" -cli %*
 ) else (
-    echo ParsecDisplay.exe does not exist.
+    echo D92Streaming.exe does not exist.
 )
 
 endlocal
