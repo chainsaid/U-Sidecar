@@ -32,18 +32,10 @@ jobs:
           parameters: |
             Version: "${{ github.ref_name }}"
 
-      - name: Fetch distro branch
-        uses: actions/checkout@v4
-        with:
-          ref: distro
-          fetch-depth: 0
-          path: distro
-
       - name: Make setup installer & portable app
         run: |
-          mkdir distro\publish
-          Compress-Archive -Path bin\* -DestinationPath distro\publish\portable.zip -Force
-          cd distro
+          mkdir publish
+          Compress-Archive -Path bin\* -DestinationPath publish\portable.zip -Force
           & "$env:ProgramFiles (x86)\Inno Setup 6\iscc.exe" setup.iss
 
       - name: Upload installer output
@@ -52,7 +44,7 @@ jobs:
         with:
           name: setup-installer
           path: |
-            distro/out/*.exe
+            out/*.exe
 
       - name: Sign the installer
         uses: signpath/github-action-submit-signing-request@v2
@@ -64,7 +56,7 @@ jobs:
           artifact-configuration-slug: zipped-exe
           github-artifact-id: "${{steps.artifact-upload-installer-step.outputs.artifact-id}}"
           wait-for-completion: true
-          output-artifact-directory: distro/publish
+          output-artifact-directory: publish
           parameters: |
             Version: "${{ github.ref_name }}"
 
@@ -77,4 +69,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ needs.build.outputs.artifact-name }}
-          path: distro/publish/
+          path: publish/
