@@ -32,7 +32,8 @@ namespace ParsecDisplay.D92
             Idle,
             Streaming,
             DeviceNotFound,     // D92 not enumerated (unplugged, or held by another app)
-            Disconnected,       // was streaming, a write failed — needs physical replug
+            Recovering,         // a write failed; attempting a soft USB replug (see UsbRecovery)
+            Disconnected,       // recovery gave up (or is disabled) — needs a physical replug
             CaptureSourceGone,  // the target GDI display disappeared (virtual display removed)
         }
 
@@ -54,6 +55,15 @@ namespace ParsecDisplay.D92
             /// before assuming it's a new bug.</summary>
             public int IntervalMs = 33;
             public bool DrawCursor = true;
+
+            /// <summary>On a write failure, attempt UsbRecovery.TryFullRecover()
+            /// (Windows-level disable+enable of the device node — see that
+            /// class's doc comment for why this is safe where blindly
+            /// reopening the HID handle is not) instead of immediately giving
+            /// up. Bounded by MaxRecoveryAttempts per Start() session.</summary>
+            public bool EnableAutoRecovery = true;
+            public int MaxRecoveryAttempts = 3;
+            public int RecoveryPollTimeoutMs = 15000;
         }
 
         // Panel canvas, pre-rotation "landscape" shape — see WORK_SUMMARY.md §8.7:
@@ -123,6 +133,7 @@ namespace ParsecDisplay.D92
         void Loop(string gdiDeviceName)
         {
             SetStatus(Status.Streaming, "started");
+            int recoveryAttempts = 0;
 
             while (_running)
             {
@@ -147,12 +158,33 @@ namespace ParsecDisplay.D92
                 }
                 catch (Exception ex)
                 {
-                    // Per policy: do NOT try to reopen the handle here. Surface
-                    // the failure and stop; the caller must wait for a physical
-                    // replug and call Start() again.
-                    SetStatus(Status.Disconnected, ex.Message);
-                    _running = false;
-                    break;
+                    // Never just reopen the old handle here — a plain reopen
+                    // with no real reset behind it just gives you a handle
+                    // into a still-stuck device (see WORK_SUMMARY.md §4.3 in
+                    // the parent repo). Recover() below performs an actual
+                    // Windows-level device reset (UsbRecovery.TrySoftReplug)
+                    // before ever calling D92Device.Open() again.
+                    _device?.Dispose();
+                    _device = null;
+
+                    bool recovered = false;
+                    if (_opts.EnableAutoRecovery && recoveryAttempts < _opts.MaxRecoveryAttempts)
+                    {
+                        recoveryAttempts++;
+                        SetStatus(Status.Recovering, $"write failed ({ex.Message}); soft-replug attempt {recoveryAttempts}/{_opts.MaxRecoveryAttempts}");
+                        recovered = TryRecover();
+                    }
+
+                    if (!recovered)
+                    {
+                        SetStatus(Status.Disconnected, ex.Message);
+                        _running = false;
+                        break;
+                    }
+
+                    recoveryAttempts = 0; // reset the budget after a successful recovery
+                    SetStatus(Status.Streaming, "recovered via soft replug");
+                    continue;
                 }
 
                 int elapsed = Environment.TickCount - t0;
@@ -163,6 +195,25 @@ namespace ParsecDisplay.D92
 
             _device?.Dispose();
             _device = null;
+        }
+
+        /// <summary>Disable+re-enable the D92 device node (UsbRecovery), then
+        /// poll for it to re-enumerate and reopen a fresh handle. Returns
+        /// false (leaving _device null) if either step fails or times out.</summary>
+        bool TryRecover()
+        {
+            if (!UsbRecovery.TryFullRecover())
+                return false;
+
+            var deadline = Environment.TickCount + _opts.RecoveryPollTimeoutMs;
+            while (_running && Environment.TickCount < deadline)
+            {
+                _device = D92Device.Open();
+                if (_device != null)
+                    return true;
+                Thread.Sleep(300);
+            }
+            return false;
         }
 
         /// <summary>Grab the current frame of gdiDeviceName and letterbox-fit it

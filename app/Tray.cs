@@ -84,6 +84,7 @@ namespace ParsecDisplay
                         new ToolStripMenuItem(appName, appIcon.ToBitmap(), QueryDriver),
                         new ToolStripSeparator(),
                         (MI_D92 = new ToolStripMenuItem("D92 Streaming", null, ToggleD92Streaming)),
+                        new ToolStripMenuItem("Recover D92 (power cycle)", null, ManualRecoverD92),
                         new ToolStripSeparator(),
                         new ToolStripMenuItem("t_options")
                         {
@@ -214,7 +215,8 @@ namespace ParsecDisplay
                 case PowerEvents.PowerBroadcastType.PBT_APMSUSPEND:
                 case PowerEvents.PowerBroadcastType.PBT_APMSTANDBY:
                     Interlocked.Exchange(ref ResumeHandled, 0);
-                    WasStreamingBeforeSuspend = D92Worker.CurrentStatus == D92.StreamWorker.Status.Streaming;
+                    WasStreamingBeforeSuspend = D92Worker.CurrentStatus == D92.StreamWorker.Status.Streaming
+                        || D92Worker.CurrentStatus == D92.StreamWorker.Status.Recovering;
                     D92Worker.Stop();
                     try { Vdd.Controller.Suspend(); }
                     catch (Exception ex) { Log.Warn("Suspend threw: {0}", ex.Message); }
@@ -288,6 +290,44 @@ namespace ParsecDisplay
         /// StreamWorker. See D92/StreamWorker.cs for the capture/encode/push
         /// pipeline and D92/D92Device.cs for the wire protocol.
         /// </summary>
+        /// <summary>Manual, on-demand version of the same soft-replug
+        /// (UsbRecovery.TrySoftReplug) that StreamWorker tries automatically
+        /// on a write failure. Added because the automatic path only fires
+        /// when a write actually throws — it does nothing for the "writes
+        /// keep succeeding but the panel's own display pipeline silently died"
+        /// failure mode (WORK_SUMMARY.md §4.3 in the parent repo), which
+        /// apparently still happens after streaming runs a while. This button
+        /// is the manual fallback until that's diagnosed properly — it does
+        /// NOT restart streaming afterward, click "D92 Streaming" separately.</summary>
+        async void ManualRecoverD92(object sender, EventArgs e)
+        {
+            var menuItem = sender as ToolStripMenuItem;
+            if (menuItem != null) menuItem.Enabled = false;
+
+            try
+            {
+                D92Worker.Stop(); // don't fight over the handle with a live worker
+
+                Log.Info("ManualRecoverD92: starting recovery (power cycle, falling back to PnP restart)");
+                bool ok = await Task.Run(() => D92.UsbRecovery.TryFullRecover());
+
+                MessageBox.Show(Owner,
+                    ok ? "Recovery done (power cycle, or PnP restart fallback — check debug.log for which one worked). Click \"D92 Streaming\" to resume."
+                       : "Recovery failed (both power cycle and PnP restart). Check debug.log — likely not running elevated, or the device wasn't found.",
+                    Program.AppName, MessageBoxButtons.OK,
+                    ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+            }
+            catch (Exception ex)
+            {
+                Log.Error("ManualRecoverD92 threw: {0}", ex);
+                MessageBox.Show(Owner, ex.Message, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                if (menuItem != null) menuItem.Enabled = true;
+            }
+        }
+
         void ToggleD92Streaming(object sender, EventArgs e)
         {
             if (Interlocked.Exchange(ref InD92Toggle, 1) != 0)
@@ -295,7 +335,8 @@ namespace ParsecDisplay
 
             try
             {
-                if (D92Worker.CurrentStatus == D92.StreamWorker.Status.Streaming)
+                if (D92Worker.CurrentStatus == D92.StreamWorker.Status.Streaming
+                    || D92Worker.CurrentStatus == D92.StreamWorker.Status.Recovering)
                 {
                     D92Worker.Stop();
                     return;
@@ -383,9 +424,26 @@ namespace ParsecDisplay
             }
 
             var existing = FindActiveParsecDisplay();
+
+            // Reuse it as-is if it's already at the D92 shape — no need to
+            // tear down and rebuild a perfectly good display on every single
+            // Start(). Only remove+recreate when it's actually wrong (e.g. it
+            // was created before EnsureD92CustomMode() ever ran, back when
+            // the registry preset didn't exist yet).
+            if (existing != null
+                && existing.CurrentMode != null
+                && existing.CurrentMode.Width == D92.StreamWorker.CanvasH
+                && existing.CurrentMode.Height == D92.StreamWorker.CanvasW)
+            {
+                display = existing;
+                return true;
+            }
+
             if (existing != null)
             {
-                Log.Info("TryEnsureVirtualDisplay: removing existing display index={0} to pick up the current mode preset", existing.DisplayIndex);
+                Log.Info("TryEnsureVirtualDisplay: existing display index={0} is {1}x{2}, not {3}x{4} — recreating",
+                    existing.DisplayIndex, existing.CurrentMode?.Width, existing.CurrentMode?.Height,
+                    D92.StreamWorker.CanvasH, D92.StreamWorker.CanvasW);
                 try { Vdd.Controller.RemoveDisplay(existing.DisplayIndex); }
                 catch (Exception ex) { Log.Warn("Remove existing display failed: {0}", ex.Message); }
                 Thread.Sleep(300); // let the removal settle before re-adding
@@ -426,14 +484,27 @@ namespace ParsecDisplay
             {
                 UpdateD92MenuText();
 
-                if (status == D92.StreamWorker.Status.Disconnected
-                    || status == D92.StreamWorker.Status.CaptureSourceGone)
+                switch (status)
                 {
-                    TrayIcon.ShowBalloonTip(5000, Program.AppName,
-                        $"D92 streaming stopped: {status} ({detail}). " +
-                        "Per known hardware limits, a lost session needs a physical replug " +
-                        "before restarting — don't just click Start again.",
-                        ToolTipIcon.Warning);
+                    case D92.StreamWorker.Status.Recovering:
+                        TrayIcon.ShowBalloonTip(3000, Program.AppName,
+                            $"D92 lost connection, attempting a soft replug... ({detail})",
+                            ToolTipIcon.Info);
+                        break;
+
+                    case D92.StreamWorker.Status.Streaming when detail == "recovered via soft replug":
+                        TrayIcon.ShowBalloonTip(3000, Program.AppName,
+                            "D92 streaming recovered.", ToolTipIcon.Info);
+                        break;
+
+                    case D92.StreamWorker.Status.Disconnected:
+                    case D92.StreamWorker.Status.CaptureSourceGone:
+                        TrayIcon.ShowBalloonTip(5000, Program.AppName,
+                            $"D92 streaming stopped: {status} ({detail}). " +
+                            "Automatic soft-replug recovery was exhausted or is disabled — " +
+                            "a physical replug is needed before restarting.",
+                            ToolTipIcon.Warning);
+                        break;
                 }
             });
         }
@@ -446,6 +517,9 @@ namespace ParsecDisplay
             {
                 case D92.StreamWorker.Status.Streaming:
                     MI_D92.Text = "Stop D92 Streaming";
+                    break;
+                case D92.StreamWorker.Status.Recovering:
+                    MI_D92.Text = "D92 Streaming (recovering...)";
                     break;
                 default:
                     MI_D92.Text = "Start D92 Streaming";

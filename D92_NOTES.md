@@ -143,3 +143,66 @@ policy, `StreamWorker` stops and reports `Status.Disconnected` rather than
 retrying; a physical replug is needed before starting again. Not investigated
 further tonight — root-causing that dropout (independent of this C# port) is
 still open work.
+
+## Update 2 (following morning): recovery mechanisms tried, all failed so far
+
+After more testing, the black-screen-after-a-while failure turned out to
+usually be the "writes succeed, panel just goes dark" variant (parent repo's
+WORK_SUMMARY.md §4.3), not a USB write exception — so `StreamWorker`'s
+auto-recovery path (which only fires on a write exception) never even
+engages for it. That's a real gap, not yet closed.
+
+**What was tried, in order, all confirmed NOT to fix a dead panel:**
+
+1. **`UsbRecovery.TrySoftReplug()`** — `SetupDiCallClassInstaller` /
+   `DIF_PROPERTYCHANGE` (Device Manager's "Disable device" then "Enable
+   device"). Confirmed via Device Manager visibly refreshing that it does
+   run, but the panel stayed black. This only restarts the driver stack — it
+   never cuts power to the USB port, so it can't fix anything that needs an
+   actual power-on reset.
+2. **`UsbRecovery.TryPowerCyclePort()`** — `IOCTL_USB_HUB_CYCLE_PORT` on the
+   parent hub, meant to actually cut/restore VBUS on that port (real
+   unplug/replug equivalent). First implementation had a devnode-walking bug
+   (read the port address off the wrong ancestor, resolved "the hub" as the
+   D92's own composite USB node — see debug.log: `hub USB\VID_5548&PID_1011\...`)
+   so the IOCTL silently never fired; fixed to walk up however many hops it
+   takes to reach a real `GUID_DEVINTERFACE_USB_HUB` ancestor. **Not yet
+   re-tested after that fix** — still needs a real black-screen repro to
+   confirm the IOCTL actually fires and, more importantly, whether it fixes
+   anything even when it does.
+3. **Manual "just reopen and restream" (no reset at all)** — user tested
+   this directly: let it go black, skipped the recovery button, clicked
+   "D92 Streaming" to Stop then Start fresh. **Did not recover either.**
+   This is the most important negative result of the night: it rules out
+   the theory that the official app's fix is "nothing special, just
+   reopen+stream" — since our app does exactly that and it didn't work.
+
+**Also important**: a second recovery-capture packet trace (this time
+launching the official MiraBox software myself, not the user) showed the
+D92 device was **already at PnP status "OK" in Device Manager the whole
+time**, before MiraBox was even opened — i.e. the device was never actually
+gone from Windows' point of view during this particular black-screen
+episode. The "burst of GET_DESCRIPTOR requests" pattern from the first
+recovery capture (originally read as "the recovery mechanism") reappeared
+here too, at a different, shorter delay (~8s vs ~35s) — this now looks more
+like routine descriptor housekeeping that happens whenever any app freshly
+opens the HID device, not a deliberate reset trigger. **The original
+"GET_DESCRIPTOR burst = the fix" theory from Update 1 is likely wrong** and
+should not be treated as confirmed; it was never that panel's USB identity
+that needed resetting.
+
+**Where this leaves things**: something the official MiraBox software does
+still reliably revives a dead panel, and it is not yet identified. Ruled out
+so far: PnP driver restart, USB hub port power cycle (pending re-test after
+the bug fix), and "just reopen the HID handle and resume streaming" with no
+special sequence. Candidates not yet examined: the exact byte-for-byte
+content/pacing of the official app's first several frames after connecting
+(captured in both recovery-capture pcaps, not yet diff'd byte-for-byte
+against our own driver's first frames), and whether MiraBox sends some
+control command (handshake/APPNEW, or something else) we're not sending.
+
+Also fixed a papercut along the way: `TryEnsureVirtualDisplay` no longer
+tears down and recreates the Parsec virtual display on every single Start()
+— it only does that when the existing one isn't already at the D92 shape
+(e.g. it predates `EnsureD92CustomMode` ever running). Reuses it as-is
+otherwise.
