@@ -102,6 +102,29 @@ namespace ParsecDisplay.D92
                 return false;
             }
 
+            // Reopening the HID handle within the same physical USB connection
+            // (suspend/resume, or the user toggling "D92 Streaming" off/on) is
+            // the #1 confirmed cause of a black panel (parent repo's
+            // WORK_SUMMARY.md §4.3). Replaying the official app's connect
+            // sequence -- DIS wake, ~450ms, LIG brightness -- before streaming
+            // is confirmed on real hardware (§8.13 there) to revive a panel
+            // left black by exactly this kind of reopen, with no PnP reset or
+            // physical replug needed. Do this on every Start(), not only after
+            // a detected failure, since the official app does it unconditionally
+            // on every connect too.
+            try
+            {
+                _device.WakeAndSetBrightness();
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("D92 StreamWorker: wake sequence failed on open: {0}", ex.Message);
+                _device.Dispose();
+                _device = null;
+                SetStatus(Status.DeviceNotFound, $"wake sequence failed: {ex.Message}");
+                return false;
+            }
+
             _running = true;
             _thread = new Thread(() => Loop(gdiDeviceName));
             _thread.IsBackground = true;
@@ -197,20 +220,61 @@ namespace ParsecDisplay.D92
             _device = null;
         }
 
-        /// <summary>Disable+re-enable the D92 device node (UsbRecovery), then
-        /// poll for it to re-enumerate and reopen a fresh handle. Returns
-        /// false (leaving _device null) if either step fails or times out.</summary>
+        /// <summary>Reopen the HID handle and replay the official app's connect
+        /// sequence (D92Device.WakeAndSetBrightness). Confirmed on real
+        /// hardware (parent repo's WORK_SUMMARY.md §8.13) to revive a panel
+        /// left black by a plain reopen -- no PnP disable/enable or USB hub
+        /// power-cycle needed, which earlier testing (§8.11, D92_NOTES.md
+        /// "Update 2") found did NOT fix a dead panel on their own anyway.
+        /// UsbRecovery.TryFullRecover() is kept only as a last-resort fallback
+        /// for the case where the device isn't enumerating at all (actually
+        /// unplugged, or wedged in a way a plain reopen can't reach), tried
+        /// after the plain-reopen loop below gives up.</summary>
         bool TryRecover()
         {
-            if (!UsbRecovery.TryFullRecover())
-                return false;
-
             var deadline = Environment.TickCount + _opts.RecoveryPollTimeoutMs;
             while (_running && Environment.TickCount < deadline)
             {
                 _device = D92Device.Open();
                 if (_device != null)
-                    return true;
+                {
+                    try
+                    {
+                        _device.WakeAndSetBrightness();
+                        return true;
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warn("D92 StreamWorker: wake sequence failed on reopen: {0}", ex.Message);
+                        _device.Dispose();
+                        _device = null;
+                    }
+                }
+                Thread.Sleep(300);
+            }
+
+            Log.Warn("D92 StreamWorker: plain reopen+wake gave up, falling back to UsbRecovery.TryFullRecover()");
+            if (!UsbRecovery.TryFullRecover())
+                return false;
+
+            deadline = Environment.TickCount + _opts.RecoveryPollTimeoutMs;
+            while (_running && Environment.TickCount < deadline)
+            {
+                _device = D92Device.Open();
+                if (_device != null)
+                {
+                    try
+                    {
+                        _device.WakeAndSetBrightness();
+                        return true;
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warn("D92 StreamWorker: wake sequence failed after UsbRecovery: {0}", ex.Message);
+                        _device.Dispose();
+                        _device = null;
+                    }
+                }
                 Thread.Sleep(300);
             }
             return false;

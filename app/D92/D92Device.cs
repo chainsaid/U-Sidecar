@@ -284,6 +284,26 @@ namespace ParsecDisplay.D92
             Send(BuildCtrl("DIS"));
         }
 
+        /// <summary>
+        /// Replays the official app's connect opening sequence: DIS (wake) ->
+        /// ~450ms -> LIG (brightness). Confirmed byte-for-byte identical across
+        /// three real captures (two "official app revives a black panel"
+        /// sessions plus one plain startup) in the parent repo's
+        /// WORK_SUMMARY.md §8.12/§8.13 -- the official app does this on every
+        /// connect, not just to fix a black panel, and it is the one thing no
+        /// recovery attempt in this port had tried before it was confirmed to
+        /// actually revive a dead panel on real hardware. Call this right
+        /// after every successful Open() (fresh start and post-recovery
+        /// reopen alike), then start streaming immediately -- do not leave
+        /// the OUT endpoint idle afterward.
+        /// </summary>
+        public void WakeAndSetBrightness(int brightness = 50, int delayMs = 450)
+        {
+            ScreenOn();
+            System.Threading.Thread.Sleep(delayMs);
+            SetBrightness(brightness);
+        }
+
         public void Dispose()
         {
             if (IsOpen)

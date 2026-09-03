@@ -206,3 +206,40 @@ tears down and recreates the Parsec virtual display on every single Start()
 — it only does that when the existing one isn't already at the D92 shape
 (e.g. it predates `EnsureD92CustomMode` ever running). Reuses it as-is
 otherwise.
+
+## Update 3: root cause found + fix wired in (this app was the culprit)
+
+The "candidates not yet examined" note above got closed out in the parent
+repo (WORK_SUMMARY.md §8.12/§8.13): byte-diffing the two recovery pcaps
+against a plain startup capture showed the official app's connect sequence
+is always identical — `DIS` (wake) → ~450ms → `LIG` (brightness=50) → then
+continuous DRA streaming, no APPNEW/CONNECT, no re-enumeration. Confirmed
+on real hardware: opening a fresh HID handle on an already-black panel and
+sending exactly that sequence before streaming revived it, no PnP reset or
+physical replug needed.
+
+Also confirmed: **this app was itself the thing reliably triggering the
+black screen**, independent of any USB flakiness. `StreamWorker.Stop()`
+closes the HID handle; `Start()` opens a new one. Per the parent repo's
+CLAUDE.md, reopening the handle within the same physical USB connection —
+even with the device never actually unplugged — is the #1 confirmed cause
+of a black panel. This app does exactly that Stop()+Start() cycle on every
+suspend/resume (`Tray.OnPowerModeChanged`/`OnResume`) and every manual
+toggle of the "D92 Streaming" tray item (`ToggleD92Streaming`). So normal
+use of this app (closing the laptop lid, or clicking the tray toggle) was
+enough to hit the known black-screen trigger on its own.
+
+Fix: `D92Device.WakeAndSetBrightness()` (DIS → 450ms → LIG) is now called
+after every successful `D92Device.Open()` in `StreamWorker` — both the
+initial `Start()` and the reopen inside `TryRecover()` — before streaming
+resumes. `TryRecover()` was also simplified: it now tries a plain
+reopen+wake first (matches what's confirmed to work) and only falls back to
+`UsbRecovery.TryFullRecover()`'s PnP disable/enable dance if the device
+isn't enumerating at all — that heavier path was already confirmed (Update
+2 above) to *not* fix a dead-but-still-enumerated panel on its own, so it's
+no longer the primary recovery strategy.
+
+**Not yet re-tested against this app specifically** (only verified via the
+Python reference driver in the parent repo) — next step is to actually
+trigger a black screen through this app (e.g. put the laptop to sleep and
+wake it while streaming) and confirm the panel comes back on its own.

@@ -499,10 +499,21 @@ namespace ParsecDisplay
 
                     case D92.StreamWorker.Status.Disconnected:
                     case D92.StreamWorker.Status.CaptureSourceGone:
+                        // No physical replug needed here: the handle is just
+                        // closed (StreamWorker.Stop() already ran internally
+                        // after recovery gave up), same as after a normal
+                        // Stop(). Clicking "Start D92 Streaming" again opens a
+                        // fresh handle and replays the wake sequence
+                        // (D92Device.WakeAndSetBrightness) before streaming —
+                        // that's confirmed to revive a panel left black by
+                        // this kind of reopen (WORK_SUMMARY.md §8.13 in the
+                        // parent repo). A physical replug is only ever needed
+                        // if the device stops enumerating entirely, which
+                        // shows up as DeviceNotFound on the next Start(), not
+                        // as this status.
                         TrayIcon.ShowBalloonTip(5000, Program.AppName,
                             $"D92 streaming stopped: {status} ({detail}). " +
-                            "Automatic soft-replug recovery was exhausted or is disabled — " +
-                            "a physical replug is needed before restarting.",
+                            "Click \"Start D92 Streaming\" to reconnect.",
                             ToolTipIcon.Warning);
                         break;
                 }
