@@ -33,6 +33,7 @@
     <system:String x:Key="t_restore_displays">Restore displays</system:String>
     <system:String x:Key="t_fallback_display">Fallback display</system:String>
     <system:String x:Key="t_keep_screen_on">Keep screen on</system:String>
+    <system:String x:Key="t_auto_start_streaming">Auto-start when plugged in</system:String>
     <system:String x:Key="t_check_for_update">Check for update</system:String>
     <system:String x:Key="t_exit">Exit</system:String>
     
@@ -55,5 +56,25 @@
     <system:String x:Key="t_msg_failed_to_obtain_handle">Failed to obtain the device handle, please check the driver installation again.</system:String>
     <system:String x:Key="t_msg_failed_to_add_display">Failed to add virtual display.</system:String>
     <system:String x:Key="t_msg_failed_to_remove_display">Failed to remove virtual display.</system:String>
-    
+
+    <!--D92 panel-->
+    <system:String x:Key="t_d92_start_streaming">Start D92 Streaming</system:String>
+    <system:String x:Key="t_d92_stop_streaming">Stop D92 Streaming</system:String>
+    <system:String x:Key="t_d92_recovering">D92 Streaming (recovering...)</system:String>
+    <system:String x:Key="t_msg_d92_not_found">D92 not found. Make sure it's plugged in and the official MiraBox software isn't holding it open.</system:String>
+    <system:String x:Key="t_msg_d92_recovering">D92 lost connection, attempting a soft replug... ({0})</system:String>
+    <system:String x:Key="t_msg_d92_recovered">D92 streaming recovered.</system:String>
+    <system:String x:Key="t_msg_d92_stopped">D92 streaming stopped: {0} ({1}). Click "D92 Streaming" to reconnect.</system:String>
+    <system:String x:Key="t_msg_vdd_driver">VDD driver</system:String>
+    <system:String x:Key="t_label_name">Name</system:String>
+    <system:String x:Key="t_label_version">Version</system:String>
+    <system:String x:Key="t_msg_d92_panel">D92 panel</system:String>
+    <system:String x:Key="t_label_usb">USB</system:String>
+    <system:String x:Key="t_usb_connected">connected</system:String>
+    <system:String x:Key="t_usb_not_found">not found</system:String>
+    <system:String x:Key="t_label_streaming">Streaming</system:String>
+    <system:String x:Key="t_msg_streaming_status_stale"> (from before the device was last plugged in — click "D92 Streaming" to start)</system:String>
+    <system:String x:Key="t_msg_display_not_active">Added a virtual display but Windows hasn't reported it active yet. Try again in a moment.</system:String>
+    <system:String x:Key="t_msg_display_mode_failed">Couldn't set the virtual display to {0}x{1}. Make sure {2} is running as Administrator (needed to write the custom-mode registry preset) and try again.</system:String>
+
 </ResourceDictionary>

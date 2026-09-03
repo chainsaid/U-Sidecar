@@ -55,6 +55,17 @@ namespace ParsecDisplay.D92
         }
 
         /// <summary>
+        /// True if a D92 HID device path is currently enumerated by Windows
+        /// (plugged in and bound to the HID driver), without opening it.
+        /// Safe to call any time, including while StreamWorker already holds
+        /// the one-and-only handle it's allowed to hold (see the class-level
+        /// operating constraints above) -- this only walks SetupDi, it never
+        /// calls CreateFileW, so it can't be the reopen that bricks the panel.
+        /// Useful for status/diagnostics UI that shouldn't touch the handle.
+        /// </summary>
+        public static bool IsDeviceEnumerated() => FindDevicePath() != null;
+
+        /// <summary>
         /// Find and open the first D92 HID device path. Returns null if no
         /// device is currently enumerated (unplugged, or exclusively opened
         /// by another process such as the official MiraBox software).

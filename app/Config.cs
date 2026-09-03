@@ -30,6 +30,17 @@ namespace ParsecDisplay
             }
         }
 
+        /// <summary>When on, the tray app starts D92 streaming by itself as
+        /// soon as it detects the panel's USB device is present -- both at
+        /// launch and later if it gets plugged in while the app is already
+        /// running -- instead of waiting for the user to click "D92
+        /// Streaming". See Tray's AutoStreamPollTimer.</summary>
+        public static bool AutoStartStreaming
+        {
+            get => GetInt(nameof(AutoStartStreaming)) != 0;
+            set => SetInt(nameof(AutoStartStreaming), value ? 1 : 0);
+        }
+
         public static bool SkipDriverCheck
         {
             get => GetInt(nameof(SkipDriverCheck)) != 0;

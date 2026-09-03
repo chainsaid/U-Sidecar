@@ -33,6 +33,7 @@
     <system:String x:Key="t_restore_displays">Khôi phục lại màn hình</system:String>
     <system:String x:Key="t_fallback_display">Màn hình dự phòng</system:String>
     <system:String x:Key="t_keep_screen_on">Luôn sáng màn hình</system:String>
+    <system:String x:Key="t_auto_start_streaming">Tự động phát khi cắm</system:String>
     <system:String x:Key="t_check_for_update">Kiểm tra cập nhật</system:String>
     <system:String x:Key="t_exit">Thoát</system:String>
 
@@ -55,5 +56,25 @@
     <system:String x:Key="t_msg_failed_to_obtain_handle">Không thể lấy 'device handle', vui lòng kiểm tra cài đặt driver và thử lại.</system:String>
     <system:String x:Key="t_msg_failed_to_add_display">Lỗi khi thêm màn hình ảo.</system:String>
     <system:String x:Key="t_msg_failed_to_remove_display">Lỗi khi gỡ màn hình ảo.</system:String>
-    
+
+    <!--Bảng D92-->
+    <system:String x:Key="t_d92_start_streaming">Bắt đầu D92 Streaming</system:String>
+    <system:String x:Key="t_d92_stop_streaming">Dừng D92 Streaming</system:String>
+    <system:String x:Key="t_d92_recovering">D92 Streaming (đang khôi phục...)</system:String>
+    <system:String x:Key="t_msg_d92_not_found">Không tìm thấy D92. Hãy đảm bảo đã cắm và phần mềm MiraBox chính thức không đang chiếm dụng nó.</system:String>
+    <system:String x:Key="t_msg_d92_recovering">D92 mất kết nối, đang thử kết nối lại... ({0})</system:String>
+    <system:String x:Key="t_msg_d92_recovered">D92 Streaming đã được khôi phục.</system:String>
+    <system:String x:Key="t_msg_d92_stopped">D92 Streaming đã dừng: {0} ({1}). Nhấp "D92 Streaming" để kết nối lại.</system:String>
+    <system:String x:Key="t_msg_vdd_driver">Trình điều khiển VDD</system:String>
+    <system:String x:Key="t_label_name">Tên</system:String>
+    <system:String x:Key="t_label_version">Phiên bản</system:String>
+    <system:String x:Key="t_msg_d92_panel">Bảng D92</system:String>
+    <system:String x:Key="t_label_usb">USB</system:String>
+    <system:String x:Key="t_usb_connected">đã kết nối</system:String>
+    <system:String x:Key="t_usb_not_found">không tìm thấy</system:String>
+    <system:String x:Key="t_label_streaming">Streaming</system:String>
+    <system:String x:Key="t_msg_streaming_status_stale"> (từ trước khi cắm thiết bị lần trước — nhấp "D92 Streaming" để bắt đầu)</system:String>
+    <system:String x:Key="t_msg_display_not_active">Đã thêm màn hình ảo nhưng Windows chưa báo là đang hoạt động. Hãy thử lại sau một chút.</system:String>
+    <system:String x:Key="t_msg_display_mode_failed">Không thể đặt màn hình ảo thành {0}x{1}. Hãy đảm bảo {2} đang chạy với quyền Administrator (cần để ghi cấu hình độ phân giải tùy chỉnh vào registry) rồi thử lại.</system:String>
+
 </ResourceDictionary>

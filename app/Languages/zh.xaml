@@ -33,6 +33,7 @@
     <system:String x:Key="t_restore_displays">恢复上次关闭的显示器</system:String>
     <system:String x:Key="t_fallback_display">无屏时启用虚拟显示器</system:String>
     <system:String x:Key="t_keep_screen_on">保持屏幕开启</system:String>
+    <system:String x:Key="t_auto_start_streaming">插上自动推流</system:String>
     <system:String x:Key="t_check_for_update">检查更新</system:String>
     <system:String x:Key="t_exit">退出</system:String>
 
@@ -55,5 +56,25 @@
     <system:String x:Key="t_msg_failed_to_obtain_handle">无法获取设备句柄，请重新检查驱动程序安装。</system:String>
     <system:String x:Key="t_msg_failed_to_add_display">无法添加虚拟显示器。</system:String>
     <system:String x:Key="t_msg_failed_to_remove_display">无法移除虚拟显示器。</system:String>
+
+    <!--D92 面板-->
+    <system:String x:Key="t_d92_start_streaming">开始 D92 推流</system:String>
+    <system:String x:Key="t_d92_stop_streaming">停止 D92 推流</system:String>
+    <system:String x:Key="t_d92_recovering">D92 推流（恢复中…）</system:String>
+    <system:String x:Key="t_msg_d92_not_found">找不到 D92。请确认已插好，并且官方 MiraBox 软件没有占用它。</system:String>
+    <system:String x:Key="t_msg_d92_recovering">D92 连接丢失，正在尝试软重连…（{0}）</system:String>
+    <system:String x:Key="t_msg_d92_recovered">D92 推流已恢复。</system:String>
+    <system:String x:Key="t_msg_d92_stopped">D92 推流已停止：{0}（{1}）。点击“D92 Streaming”重新连接。</system:String>
+    <system:String x:Key="t_msg_vdd_driver">VDD 驱动</system:String>
+    <system:String x:Key="t_label_name">名称</system:String>
+    <system:String x:Key="t_label_version">版本</system:String>
+    <system:String x:Key="t_msg_d92_panel">D92 面板</system:String>
+    <system:String x:Key="t_label_usb">USB</system:String>
+    <system:String x:Key="t_usb_connected">已连接</system:String>
+    <system:String x:Key="t_usb_not_found">未找到</system:String>
+    <system:String x:Key="t_label_streaming">推流</system:String>
+    <system:String x:Key="t_msg_streaming_status_stale">（设备上次插入前的记录——点击“D92 Streaming”开始）</system:String>
+    <system:String x:Key="t_msg_display_not_active">已添加虚拟显示器，但 Windows 还没上报它已激活。请稍后重试。</system:String>
+    <system:String x:Key="t_msg_display_mode_failed">无法把虚拟显示器设为 {0}x{1}。请确认 {2} 是以管理员身份运行的（写入自定义分辨率注册表需要），然后重试。</system:String>
 
 </ResourceDictionary>

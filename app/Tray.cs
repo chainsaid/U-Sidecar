@@ -19,6 +19,12 @@ namespace ParsecDisplay
 
         ToolStripMenuItem MI_RunOnStartup;
         ToolStripMenuItem MI_KeepScreenOn;
+        ToolStripMenuItem MI_AutoStartStreaming;
+
+        // Polls for the D92 USB device showing up while AutoStartStreaming
+        // is on, so plugging the panel in later (app already running) also
+        // auto-starts streaming, not just the check done once at launch.
+        System.Windows.Forms.Timer AutoStreamPollTimer;
 
         // Windows fires multiple resume events (RESUMESUSPEND, RESUMEAUTOMATIC,
         // possibly RESUMESTANDBY) within ~100ms. We only want to run the
@@ -37,6 +43,15 @@ namespace ParsecDisplay
         D92.StreamWorker D92Worker;
         ToolStripMenuItem MI_D92;
         int InD92Toggle;
+
+        // Suppresses AutoStartStreaming from immediately undoing a manual
+        // "Stop" click (the poll timer would otherwise restart it within
+        // AutoStreamPollTimer's interval, since the device is still plugged
+        // in). Set on manual stop, cleared once the device is actually seen
+        // unplugged -- so a later replug still auto-starts as expected, and
+        // any *non*-manual stop (a real disconnect/failure) is never
+        // suppressed, since only the Stop menu click sets this.
+        bool ManuallyStoppedD92;
 
         //  D92 Streaming v{version}
         //  ______________
@@ -78,6 +93,8 @@ namespace ParsecDisplay
                 {
                     Items =
                     {
+                        new ToolStripMenuItem(appName, appIcon.ToBitmap(), QueryDriver),
+                        new ToolStripSeparator(),
                         (MI_D92 = new ToolStripMenuItem("D92 Streaming", null, ToggleD92Streaming)),
                         new ToolStripSeparator(),
                         new ToolStripMenuItem("t_options")
@@ -88,6 +105,8 @@ namespace ParsecDisplay
                                     null, OptionsCheck) { CheckOnClick = true, Checked = Config.RunOnStartup }),
                                 (MI_KeepScreenOn = new ToolStripMenuItem("t_keep_screen_on",
                                     null, OptionsCheck) { CheckOnClick = true, Checked = Config.KeepScreenOn }),
+                                (MI_AutoStartStreaming = new ToolStripMenuItem("t_auto_start_streaming",
+                                    null, OptionsCheck) { CheckOnClick = true, Checked = Config.AutoStartStreaming }),
                             }
                         },
                         new ToolStripSeparator(),
@@ -104,6 +123,23 @@ namespace ParsecDisplay
             PowerEvents.PowerModeChanged += OnPowerModeChanged;
 
             AutoCreateVirtualDisplay();
+            TryAutoStartStreaming();
+
+            // Catches the device showing up later -- app already running,
+            // D92 plugged in afterward -- since there's no device-arrival
+            // event wired up here, just a cheap periodic recheck. Also what
+            // clears ManuallyStoppedD92 once the panel is actually unplugged
+            // (see that field's comment) and what retries after a real
+            // disconnect/failure while AutoStartStreaming is on.
+            AutoStreamPollTimer = new System.Windows.Forms.Timer { Interval = 3000 };
+            AutoStreamPollTimer.Tick += (s, e) =>
+            {
+                if (!D92.D92Device.IsDeviceEnumerated())
+                    ManuallyStoppedD92 = false;
+                else
+                    TryAutoStartStreaming();
+            };
+            AutoStreamPollTimer.Start();
         }
 
         /// <summary>Creates the D92-shaped virtual display as soon as the app
@@ -124,6 +160,48 @@ namespace ParsecDisplay
             catch (Exception ex)
             {
                 Log.Error("AutoCreateVirtualDisplay threw: {0}", ex);
+            }
+        }
+
+        /// <summary>Starts D92 streaming without user interaction when
+        /// Config.AutoStartStreaming is on, the panel's USB device is
+        /// present, nothing is streaming/recovering already, and this isn't
+        /// right after a manual Stop (see ManuallyStoppedD92). Called at
+        /// launch, whenever the option is turned on, and from
+        /// AutoStreamPollTimer's tick. Mirrors ToggleD92Streaming's start
+        /// path but logs instead of popping a MessageBox on failure, same
+        /// reasoning as AutoCreateVirtualDisplay.</summary>
+        void TryAutoStartStreaming()
+        {
+            if (!Config.AutoStartStreaming || ManuallyStoppedD92)
+                return;
+            if (D92Worker.CurrentStatus == D92.StreamWorker.Status.Streaming
+                || D92Worker.CurrentStatus == D92.StreamWorker.Status.Recovering)
+                return;
+            if (!D92.D92Device.IsDeviceEnumerated())
+                return;
+
+            if (Interlocked.Exchange(ref InD92Toggle, 1) != 0)
+                return; // a manual toggle (or another auto-start attempt) is already in flight
+
+            try
+            {
+                if (!TryEnsureVirtualDisplay(out var display, out var error))
+                {
+                    Log.Warn("TryAutoStartStreaming: couldn't set up virtual display: {0}", error);
+                    return;
+                }
+
+                if (!D92Worker.Start(display.DeviceName))
+                    Log.Warn("TryAutoStartStreaming: D92 not found (unplugged, or held by another app)");
+            }
+            catch (Exception ex)
+            {
+                Log.Error("TryAutoStartStreaming threw: {0}", ex);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref InD92Toggle, 0);
             }
         }
 
@@ -301,8 +379,11 @@ namespace ParsecDisplay
                     || D92Worker.CurrentStatus == D92.StreamWorker.Status.Recovering)
                 {
                     D92Worker.Stop();
+                    ManuallyStoppedD92 = true; // don't let AutoStartStreaming immediately undo this
                     return;
                 }
+
+                ManuallyStoppedD92 = false;
 
                 if (!TryEnsureVirtualDisplay(out var display, out var error))
                 {
@@ -312,8 +393,7 @@ namespace ParsecDisplay
 
                 if (!D92Worker.Start(display.DeviceName))
                 {
-                    MessageBox.Show(Owner,
-                        "D92 not found. Make sure it's plugged in and the official MiraBox software isn't holding it open.",
+                    MessageBox.Show(Owner, App.GetTranslation("t_msg_d92_not_found"),
                         Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
             }
@@ -452,7 +532,7 @@ namespace ParsecDisplay
 
             if (display == null)
             {
-                error = "Added a virtual display but Windows hasn't reported it active yet. Try again in a moment.";
+                error = App.GetTranslation("t_msg_display_not_active");
                 return false;
             }
 
@@ -462,9 +542,8 @@ namespace ParsecDisplay
 
             if (!changed)
             {
-                error = $"Couldn't set the virtual display to {D92.StreamWorker.CanvasH}x{D92.StreamWorker.CanvasW}. " +
-                        "Make sure ParsecDisplay is running as Administrator (needed to write the custom-mode " +
-                        "registry preset) and try again.";
+                error = App.GetTranslation("t_msg_display_mode_failed",
+                    D92.StreamWorker.CanvasH, D92.StreamWorker.CanvasW, Program.AppName);
                 return false;
             }
 
@@ -481,13 +560,13 @@ namespace ParsecDisplay
                 {
                     case D92.StreamWorker.Status.Recovering:
                         TrayIcon.ShowBalloonTip(3000, Program.AppName,
-                            $"D92 lost connection, attempting a soft replug... ({detail})",
+                            App.GetTranslation("t_msg_d92_recovering", detail),
                             ToolTipIcon.Info);
                         break;
 
                     case D92.StreamWorker.Status.Streaming when detail == "recovered via soft replug":
                         TrayIcon.ShowBalloonTip(3000, Program.AppName,
-                            "D92 streaming recovered.", ToolTipIcon.Info);
+                            App.GetTranslation("t_msg_d92_recovered"), ToolTipIcon.Info);
                         break;
 
                     case D92.StreamWorker.Status.Disconnected:
@@ -505,8 +584,7 @@ namespace ParsecDisplay
                         // shows up as DeviceNotFound on the next Start(), not
                         // as this status.
                         TrayIcon.ShowBalloonTip(5000, Program.AppName,
-                            $"D92 streaming stopped: {status} ({detail}). " +
-                            "Click \"Start D92 Streaming\" to reconnect.",
+                            App.GetTranslation("t_msg_d92_stopped", status, detail),
                             ToolTipIcon.Warning);
                         break;
                 }
@@ -520,13 +598,13 @@ namespace ParsecDisplay
             switch (D92Worker.CurrentStatus)
             {
                 case D92.StreamWorker.Status.Streaming:
-                    MI_D92.Text = "Stop D92 Streaming";
+                    MI_D92.Text = App.GetTranslation("t_d92_stop_streaming");
                     break;
                 case D92.StreamWorker.Status.Recovering:
-                    MI_D92.Text = "D92 Streaming (recovering...)";
+                    MI_D92.Text = App.GetTranslation("t_d92_recovering");
                     break;
                 default:
-                    MI_D92.Text = "Start D92 Streaming";
+                    MI_D92.Text = App.GetTranslation("t_d92_start_streaming");
                     break;
             }
         }
@@ -538,10 +616,34 @@ namespace ParsecDisplay
             var status = Vdd.Core.QueryStatus(out var version);
             var caption = $"{Program.AppName} v{Program.AppVersion}";
 
+            // D92.D92Device.IsDeviceEnumerated() only walks SetupDi (no
+            // CreateFileW) -- safe to call here even while StreamWorker
+            // already holds the one handle it's allowed to hold.
+            var usbPresent = D92.D92Device.IsDeviceEnumerated();
+
+            // CurrentStatus is whatever StreamWorker last landed on, not a
+            // live re-check -- if streaming was never (re)started since the
+            // device was last plugged in, this can still read DeviceNotFound
+            // or Disconnected even though usbPresent is true right now (e.g.
+            // right after a physical replug). That's not stale/wrong, just
+            // unintuitive side by side with "USB: connected" -- spell out
+            // why instead of leaving it looking contradictory.
+            var streamingLine = D92Worker.CurrentStatus.ToString();
+            if (usbPresent && (D92Worker.CurrentStatus == D92.StreamWorker.Status.DeviceNotFound
+                             || D92Worker.CurrentStatus == D92.StreamWorker.Status.Disconnected))
+            {
+                streamingLine += App.GetTranslation("t_msg_streaming_status_stale");
+            }
+
             MessageBox.Show(Owner,
-                $"{Vdd.Core.ADAPTER}\n\n" +
-                $"- Version: {version}\n" +
-                $"- {App.GetTranslation("t_msg_driver_status")}: {status}",
+                $"{App.GetTranslation("t_msg_vdd_driver")}\n\n" +
+                $"- {App.GetTranslation("t_label_name")}: {Vdd.Core.ADAPTER}\n" +
+                $"- {App.GetTranslation("t_label_version")}: {version}\n" +
+                $"- {App.GetTranslation("t_msg_driver_status")}: {status}\n\n" +
+                $"{App.GetTranslation("t_msg_d92_panel")}\n\n" +
+                $"- {App.GetTranslation("t_label_usb")}: " +
+                $"{(usbPresent ? App.GetTranslation("t_usb_connected") : App.GetTranslation("t_usb_not_found"))}\n" +
+                $"- {App.GetTranslation("t_label_streaming")}: {streamingLine}",
                 caption, MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
@@ -551,6 +653,12 @@ namespace ParsecDisplay
                 Config.RunOnStartup = MI_RunOnStartup.Checked;
             else if (sender == MI_KeepScreenOn)
                 Config.KeepScreenOn = MI_KeepScreenOn.Checked;
+            else if (sender == MI_AutoStartStreaming)
+            {
+                Config.AutoStartStreaming = MI_AutoStartStreaming.Checked;
+                if (Config.AutoStartStreaming)
+                    TryAutoStartStreaming();
+            }
         }
 
         // MainWindow (the generic display-management dashboard) is never
@@ -599,6 +707,9 @@ namespace ParsecDisplay
 
         void Exit(object sender, EventArgs e)
         {
+            AutoStreamPollTimer?.Stop();
+            AutoStreamPollTimer?.Dispose();
+
             D92Worker?.Stop();
 
             var displays = Vdd.Core.GetDisplays();
